@@ -438,6 +438,21 @@ function wrapper(plugin_info) {
   /* jshint shadow:true */
   window.plugin.fanfields = function () {};
   var thisplugin = window.plugin.fanfields;
+  
+  // Compat: window.formatDistance has been moved to IITC.utils.formatDistance
+  // in the recent builds of IITC-CE (desktop). We handle both cases :
+  thisplugin.formatDistance = function (distance) {
+      if (window.IITC && window.IITC.utils && typeof window.IITC.utils.formatDistance === 'function') {
+          return window.IITC.utils.formatDistance(distance);
+      }
+      if (typeof window.formatDistance === 'function') {
+          return window.formatDistance(distance);
+      }
+      // Fallback minimal si aucune des deux n'existe
+      return distance < 1000
+          ? Math.round(distance) + ' m'
+          : (distance / 1000).toFixed(2) + ' km';
+  };
 
   // const values
   // zoom level used for projecting points between latLng and pixel coordinates. may affect precision of triangulation
@@ -985,7 +1000,7 @@ function wrapper(plugin_info) {
           linkDetailText += '<td></td>';
 
           // Link (Distance)
-          linkDetailText += '<td>' + formatDistance(distance) + '</td>';
+          linkDetailText += '<td>' + thisplugin.formatDistance(distance) + '</td>';
           // Fields
           let fieldsCreatedByThisLink = (meta && meta.fieldsCreatedValid !== undefined) ? meta.fieldsCreatedValid : (meta && meta.creatingFieldsWith ? meta.creatingFieldsWith.length : 0);
 
