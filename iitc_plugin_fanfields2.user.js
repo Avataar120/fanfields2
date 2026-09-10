@@ -28,7 +28,7 @@ function wrapper(plugin_info) {
   plugin_info.dateTimeVersion = '2026-09-10-133600';
   plugin_info.pluginId = 'fanfields';
 
-  /* global L, $, dialog, map, portals, links, plugin, formatDistance  -- eslint*/
+  /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
   /* exported setup, changelog -- eslint */
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
