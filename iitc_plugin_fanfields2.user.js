@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.4.20260912
+// @version         2.8.5.20260912
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-12-171500';
+  plugin_info.dateTimeVersion = '2026-09-12-190000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,11 +33,17 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.5',
+      changes: [
+        'NEW: Task List strikes through a link line already made in-game for your faction (grey), and once all of a portal\'s links exist, fades and strikes through that whole portal line too (yellow). Toggle via the "Grey out done links" button.',
+        'NEW: Task List now refreshes itself live as the background plan changes (new links appearing in-game, fan field rotation, anchor changes, ...) — no need to close and reopen it.',
+      ],
+    },{
       version: '2.8.4',
       changes: [
         'NEW: add button to flip a link.',
       ],
-    },{         
+    },{
       version: '2.8.3',
       changes: [
         'FIX: formatDistance is not defined on desktop IITC-CE builds.',
@@ -861,10 +867,9 @@ function wrapper(plugin_info) {
     });
   };
 
-  // Show as list
-  thisplugin.exportText = function () {
-
-    function buildExportHTML() {
+  // Task List: build the HTML for the current plan. Used both to open the dialog and to
+  // refresh it live (see thisplugin.refreshTaskListIfOpen) as the background plan changes.
+  thisplugin.buildTaskListHTML = function () {
     var text = '<table><thead><tr>';
     let fieldSymbol = '&#9650;';
 
@@ -904,6 +909,13 @@ function wrapper(plugin_info) {
       let title = window.escapeHtmlSpecialChars(rawTitle);
       let uriTitle = encodeURIComponent(rawTitle);
 
+      // All of this portal's outgoing links already exist in-game (own faction)?
+      // If so, the whole portal row is "done": faded out and struck through.
+      let allOutgoingLinksDone = thisplugin.greyOutExistingLinks && portal.outgoing.length > 0 &&
+        portal.outgoing.every(function (outPortal) {
+          return thisplugin.isLinkInGame(portal.guid, outPortal.guid);
+        });
+
       var keysNeeded = (portal.incomingValidCount !== undefined) ? portal.incomingValidCount : portal.incoming.length;
 
       let availableKeysText = '';
@@ -934,7 +946,7 @@ function wrapper(plugin_info) {
         availableKeysText = '>';
       };
       // Row start
-      text += '<tbody class="plugin_fanfields2_exportText_Portal"><tr>';
+      text += '<tbody class="plugin_fanfields2_exportText_Portal"><tr' + (allOutgoingLinksDone ? ' class="plugin_fanfields2_portal_done"' : '') + '>';
       // List Item Index (Pos.)
       text += '<td>' + (index) + '</td>';
 
@@ -991,8 +1003,11 @@ function wrapper(plugin_info) {
 
           let meta = portal.outgoingMeta?.[outPortal.guid];
 
+          // Link already exists in-game (own faction)? Fade & strike through the whole line.
+          let linkDone = thisplugin.greyOutExistingLinks && thisplugin.isLinkInGame(portal.guid, outPortal.guid);
+
           // Row start
-          let linkDetailText = '<tr>';
+          let linkDetailText = '<tr' + (linkDone ? ' class="plugin_fanfields2_link_done"' : '') + '>';
 
           // List Item Index (Pos.)
           linkDetailText += '<td>' + (index) + '.' + thisplugin.sortedFanpoints.indexOf(outPortal) + '</td>';
@@ -1008,10 +1023,11 @@ function wrapper(plugin_info) {
           }
           linkDetailText += '</td>';
 
-          // ghi#23 (link flip): swap this link's direction, in its own compact column. Anchor links are excluded (star/fan logic).
+          // ghi#23 (link flip): swap this link's direction, in its own compact column. Anchor links are excluded (star/fan logic),
+          // as is a link already done in-game (nothing left to flip).
           var isAnchorLink = (portal.guid === thisplugin.startingpointGUID) || (outPortal.guid === thisplugin.startingpointGUID);
           linkDetailText += '<td>';
-          if (!isAnchorLink) {
+          if (!isAnchorLink && !linkDone) {
             var isFlipped = thisplugin.isLinkFlipped(portal.guid, outPortal.guid);
             linkDetailText += '<button class="plugin_fanfields2_link_flip_btn' + (isFlipped ? ' plugin_fanfields2_link_flipped' : '') +
               '" data-guid-a="' + portal.guid + '" data-guid-b="' + outPortal.guid + '" title="' +
@@ -1068,8 +1084,125 @@ function wrapper(plugin_info) {
     text += '</div>';
 
     return text;
-    } // end buildExportHTML
+  }; // end buildTaskListHTML
 
+  // ghi#23 (link flip): remember which portals' link-detail lists are expanded, so a
+  // refresh (flip/reset, or a live background update) doesn't visually collapse the
+  // dialog back to its default state.
+  thisplugin.getTaskListExpandedGuids = function () {
+    var guids = [];
+    $('#plugin_fanfields2_exportText_inner [plugin_fanfields2_exportText_toggle="toggle"]:checked')
+      .each(function () {
+        var guid = $(this).attr('data-guid');
+        if (guid) guids.push(guid);
+      });
+    return guids;
+  };
+
+  thisplugin.restoreTaskListExpandedGuids = function (guids) {
+    var $inner = $('#plugin_fanfields2_exportText_inner');
+    guids.forEach(function (guid) {
+      var $toggle = $inner.find('[plugin_fanfields2_exportText_toggle="toggle"][data-guid="' + guid + '"]');
+      if (!$toggle.length) return;
+      $toggle.prop('checked', true);
+      $toggle.parents()
+        .next('.plugin_fanfields2_exportText_LinkDetails')
+        .show();
+      $toggle.prev('.plugin_fanfields2_exportText_Label')
+        .attr('aria-expanded', true);
+    });
+  };
+
+  // Rebuild the Task List dialog's content in place, preserving the expanded/collapsed
+  // per-portal link lists. Used after a flip/reset, and to auto-refresh live as the
+  // background plan changes (new links appearing in-game, fan field rotation, etc.).
+  thisplugin.refreshTaskListDialog = function () {
+    var expandedGuids = thisplugin.getTaskListExpandedGuids();
+    $('#plugin_fanfields2_exportText_inner').html(thisplugin.buildTaskListHTML());
+    thisplugin.wireTaskListHandlers();
+    thisplugin.restoreTaskListExpandedGuids(expandedGuids);
+  };
+
+  // Whether the Task List dialog is currently open and visible.
+  thisplugin.isTaskListDialogOpen = function () {
+    return $('#plugin_fanfields2_exportText_inner').is(':visible');
+  };
+
+  // Called after every plan recalculation (see updateLayer) so an open Task List reflects
+  // background changes — new links appearing in-game, fan field rotation, etc. — without
+  // the user having to close and reopen it.
+  thisplugin.refreshTaskListIfOpen = function () {
+    if (thisplugin.isTaskListDialogOpen()) {
+      thisplugin.refreshTaskListDialog();
+    }
+  };
+
+  thisplugin.wireTaskListHandlers = function () {
+    var $inner = $('#plugin_fanfields2_exportText_inner');
+
+    $inner.find('[plugin_fanfields2_exportText_toggle="toggle"]')
+      .each(function () {
+        const $toggle = $(this);
+        const $label = $toggle.prev('.plugin_fanfields2_exportText_Label');
+        const $details = $toggle.parents()
+          .next('.plugin_fanfields2_exportText_LinkDetails');
+
+        if ($details.length) {
+          $label.addClass('has-children');
+        } else {
+          $toggle.remove(); // Remove the checkbox if there are no child elements
+          $label.css('cursor', 'default'); // Reset the cursor back to default
+        }
+      });
+    $inner.find('[plugin_fanfields2_exportText_toggle="toggle"]')
+      .change(function () {
+        const isChecked = $(this)
+          .is(':checked');
+        $(this)
+          .parents()
+          .next('.plugin_fanfields2_exportText_LinkDetails')
+          .toggle();
+        $(this)
+          .prev('.plugin_fanfields2_exportText_Label')
+          .attr('aria-expanded', isChecked);
+      });
+
+    // ghi#23 (link flip): reverse a link's direction, recompute the plan, and refresh this dialog in place.
+    $inner
+      .off('click.plugin_fanfields2_link_flip')
+      .on('click.plugin_fanfields2_link_flip', '.plugin_fanfields2_link_flip_btn', function (ev) {
+        ev.preventDefault();
+        var guidA = $(this).attr('data-guid-a');
+        var guidB = $(this).attr('data-guid-b');
+        thisplugin.toggleLinkFlip(guidA, guidB);
+        thisplugin.refreshTaskListDialog();
+      });
+
+    $('#plugin_fanfields2_reset_link_flips_btn')
+      .off('click')
+      .on('click', function () {
+        thisplugin.resetLinkFlips();
+        thisplugin.refreshTaskListDialog();
+      });
+
+    $('#plugin_fanfields2_export_pdf_btn')
+      .off('click')
+      .on('click', function () {
+        thisplugin.exportTaskListToPDF();
+      });
+
+    if (thisplugin.isCompatiblePortalRoutePlugin()) {
+      $('#plugin_fanfields2_portal_route_link')
+        .off('click')
+        .on('click', function (ev) {
+          ev.preventDefault();
+          thisplugin.routeWithPortalRoute();
+        });
+    }
+  };
+
+  // Show as list
+  thisplugin.exportText = function () {
     thisplugin.exportDialogWidth = 500;
 
     var width = thisplugin.exportDialogWidth;
@@ -1078,111 +1211,14 @@ function wrapper(plugin_info) {
       width = thisplugin.MaxDialogWidth;
     }
 
-    // ghi#23 (link flip): remember which portals' link-detail lists are expanded, so a
-    // flip/reset refresh doesn't visually collapse the dialog back to its default state.
-    function getExpandedGuids() {
-      var guids = [];
-      $('#plugin_fanfields2_exportText_inner [plugin_fanfields2_exportText_toggle="toggle"]:checked')
-        .each(function () {
-          var guid = $(this).attr('data-guid');
-          if (guid) guids.push(guid);
-        });
-      return guids;
-    }
-
-    function restoreExpandedGuids(guids) {
-      var $inner = $('#plugin_fanfields2_exportText_inner');
-      guids.forEach(function (guid) {
-        var $toggle = $inner.find('[plugin_fanfields2_exportText_toggle="toggle"][data-guid="' + guid + '"]');
-        if (!$toggle.length) return;
-        $toggle.prop('checked', true);
-        $toggle.parents()
-          .next('.plugin_fanfields2_exportText_LinkDetails')
-          .show();
-        $toggle.prev('.plugin_fanfields2_exportText_Label')
-          .attr('aria-expanded', true);
-      });
-    }
-
-    function refreshExportDialog() {
-      var expandedGuids = getExpandedGuids();
-      $('#plugin_fanfields2_exportText_inner').html(buildExportHTML());
-      wireExportHandlers();
-      restoreExpandedGuids(expandedGuids);
-    }
-
-    function wireExportHandlers() {
-      var $inner = $('#plugin_fanfields2_exportText_inner');
-
-      $inner.find('[plugin_fanfields2_exportText_toggle="toggle"]')
-        .each(function () {
-          const $toggle = $(this);
-          const $label = $toggle.prev('.plugin_fanfields2_exportText_Label');
-          const $details = $toggle.parents()
-            .next('.plugin_fanfields2_exportText_LinkDetails');
-
-          if ($details.length) {
-            $label.addClass('has-children');
-          } else {
-            $toggle.remove(); // Remove the checkbox if there are no child elements
-            $label.css('cursor', 'default'); // Reset the cursor back to default
-          }
-        });
-      $inner.find('[plugin_fanfields2_exportText_toggle="toggle"]')
-        .change(function () {
-          const isChecked = $(this)
-            .is(':checked');
-          $(this)
-            .parents()
-            .next('.plugin_fanfields2_exportText_LinkDetails')
-            .toggle();
-          $(this)
-            .prev('.plugin_fanfields2_exportText_Label')
-            .attr('aria-expanded', isChecked);
-        });
-
-      // ghi#23 (link flip): reverse a link's direction, recompute the plan, and refresh this dialog in place.
-      $inner
-        .off('click.plugin_fanfields2_link_flip')
-        .on('click.plugin_fanfields2_link_flip', '.plugin_fanfields2_link_flip_btn', function (ev) {
-          ev.preventDefault();
-          var guidA = $(this).attr('data-guid-a');
-          var guidB = $(this).attr('data-guid-b');
-          thisplugin.toggleLinkFlip(guidA, guidB);
-          refreshExportDialog();
-        });
-
-      $('#plugin_fanfields2_reset_link_flips_btn')
-        .off('click')
-        .on('click', function () {
-          thisplugin.resetLinkFlips();
-          refreshExportDialog();
-        });
-
-      $('#plugin_fanfields2_export_pdf_btn')
-        .off('click')
-        .on('click', function () {
-          thisplugin.exportTaskListToPDF();
-        });
-
-      if (thisplugin.isCompatiblePortalRoutePlugin()) {
-        $('#plugin_fanfields2_portal_route_link')
-          .off('click')
-          .on('click', function (ev) {
-            ev.preventDefault();
-            thisplugin.routeWithPortalRoute();
-          });
-      }
-    }
-
     dialog({
-      html: '<div id="plugin_fanfields2_exportText_inner">' + buildExportHTML() + '</div>',
+      html: '<div id="plugin_fanfields2_exportText_inner">' + thisplugin.buildTaskListHTML() + '</div>',
       id: 'plugin_fanfields2_alert_textExport',
       title: 'Fan Fields 2 - Task List',
       width: width,
       closeOnEscape: true
     });
-    wireExportHandlers();
+    thisplugin.wireTaskListHandlers();
 
   };
 
@@ -1249,6 +1285,18 @@ function wrapper(plugin_info) {
           td[plugin_fanfields2_enoughKeys],
           div[plugin_fanfields2_enoughKeys] {
             color: #828284;
+          }
+
+          tr.plugin_fanfields2_portal_done,
+          tr.plugin_fanfields2_portal_done td,
+          tr.plugin_fanfields2_portal_done a,
+          tr.plugin_fanfields2_portal_done span,
+          tr.plugin_fanfields2_link_done,
+          tr.plugin_fanfields2_link_done td,
+          tr.plugin_fanfields2_link_done a,
+          tr.plugin_fanfields2_link_done span {
+            color: #828284 !important;
+            text-decoration: line-through !important;
           }
         `;
 
@@ -1684,6 +1732,19 @@ function wrapper(plugin_info) {
     thisplugin.delayedUpdateLayer(0.2);
   };
 
+  // Task List: grey out / strike through links (and, once all of a portal's
+  // links exist, the portal name too) that already exist in-game for the
+  // player's own faction. Requested as a toggleable plugin option.
+  thisplugin.greyOutExistingLinks = true;
+  thisplugin.toggleGreyOutExistingLinks = function () {
+    thisplugin.greyOutExistingLinks = !thisplugin.greyOutExistingLinks;
+    thisplugin.updateGreyOutExistingLinksButton();
+  };
+  thisplugin.updateGreyOutExistingLinksButton = function () {
+    $('#plugin_fanfields2_greyout_existing_btn')
+      .html('Grey&nbsp;out&nbsp;done&nbsp;links:&nbsp;' + (thisplugin.greyOutExistingLinks ? 'ON' : 'OFF'));
+  };
+
   thisplugin.is_locked = false;
   thisplugin.lock = function () {
     thisplugin.is_locked = !thisplugin.is_locked;
@@ -2004,6 +2065,30 @@ function wrapper(plugin_info) {
       '}\n'
     );
 
+    // Task List: once all of a portal's links exist in-game, the whole portal
+    // line fades from bright to pale yellow and is struck through, end to end.
+    addCSS('\n' +
+      'tr.plugin_fanfields2_portal_done,\n' +
+      'tr.plugin_fanfields2_portal_done td,\n' +
+      'tr.plugin_fanfields2_portal_done a,\n' +
+      'tr.plugin_fanfields2_portal_done span {\n' +
+      '  color: rgba(255, 206, 0, 0.35) !important;\n' +
+      '  text-decoration: line-through !important;\n' +
+      '}\n'
+    );
+
+    // Task List: a link line that already exists in-game stays grey (like the
+    // rest of the link details) but gets struck through, end to end.
+    addCSS('\n' +
+      'tr.plugin_fanfields2_link_done,\n' +
+      'tr.plugin_fanfields2_link_done td,\n' +
+      'tr.plugin_fanfields2_link_done a,\n' +
+      'tr.plugin_fanfields2_link_done span {\n' +
+      '  color: #828284 !important;\n' +
+      '  text-decoration: line-through !important;\n' +
+      '}\n'
+    );
+
 
     addCSS('\n' +
       '.plugin_fanfields2_label {\n' +
@@ -2228,6 +2313,26 @@ function wrapper(plugin_info) {
     if ((Aa || Ab) && (Ba || Bb)) {
       return true;
     }
+  };
+
+  // Task List: does a real in-game link already exist between these two portals?
+  // Only links belonging to the player's own faction count (Res links must not
+  // grey out an Enl plan, and vice versa).
+  thisplugin.isLinkInGame = function (guidA, guidB) {
+    var ownTeam = thisplugin.getOwnFactionTeam();
+    if (ownTeam === undefined) return false;
+
+    var pointA = thisplugin.locations && thisplugin.locations[guidA];
+    var pointB = thisplugin.locations && thisplugin.locations[guidB];
+    if (!pointA || !pointB) return false;
+
+    var testLink = { a: pointA, b: pointB };
+    for (var guid in thisplugin.intelLinks) {
+      var link = thisplugin.intelLinks[guid];
+      if (link.team !== ownTeam) continue;
+      if (thisplugin.linksEqual(link, testLink)) return true;
+    }
+    return false;
   };
 
 
@@ -3640,6 +3745,10 @@ function wrapper(plugin_info) {
     } else if (thisplugin.orderPathLayerGroup) {
       thisplugin.orderPathLayerGroup.clearLayers();
     }
+
+    // Keep an open Task List in sync with the background plan (new links appearing
+    // in-game, fan field rotation, etc.) without requiring it to be reopened.
+    thisplugin.refreshTaskListIfOpen();
   };
 
 
@@ -3788,6 +3897,10 @@ function wrapper(plugin_info) {
     var buttonLinkDirectionIndicator =
       '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_direction_indicator_btn" onclick="window.plugin.fanfields.toggleLinkDirIndicator();" title="Technology Intelligence See All">Show&nbsp;link&nbsp;dir:&nbsp;ON</a> ';
 
+    // Task List: grey out / strike through links (and finished portals) that already exist in-game
+    var buttonGreyOutExistingLinks =
+      '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_greyout_existing_btn" onclick="window.plugin.fanfields.toggleGreyOutExistingLinks();" title="Grey out and strike through Task List links (and portals) that already exist in-game for your faction">Grey&nbsp;out&nbsp;done&nbsp;links:&nbsp;ON</a> ';
+
     // Shift anchor
     var buttonShiftAnchor =
       '<a class="plugin_fanfields2_btn" onclick="window.plugin.fanfields.previousStartingPoint();" title="Less Chaos More Stability">Shift&nbsp;left&nbsp;' +
@@ -3822,6 +3935,7 @@ function wrapper(plugin_info) {
       buttonRespect +
       buttonBookmarksOnly +
       buttonLinkDirectionIndicator +
+      buttonGreyOutExistingLinks +
       buttonPortalList +
       buttonManageOrder +
       buttonDrawTools +
@@ -3863,6 +3977,7 @@ function wrapper(plugin_info) {
       .append(fanfields_buttons);
 
     thisplugin.updateRespectIntelButton();
+    thisplugin.updateGreyOutExistingLinksButton();
 
     //         window.pluginCreateHook('pluginBkmrksEdit');
 
