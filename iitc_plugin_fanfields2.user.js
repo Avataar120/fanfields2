@@ -548,21 +548,14 @@ function wrapper(plugin_info) {
   // KEYS: greedy rebalancing of mesh link direction to lower the maximum keys needed at any
   //       single portal.
   // DISTANCE: when a portal's own OUTGOING count (as the base algorithm computed it — not its
-  //           total degree) is exactly 2 — its anchor link plus one mesh link, the only two
-  //           things it would ever need to physically throw — its mesh link flips (mesh
-  //           partner -> portal) only if that partner is just as close, or closer, to
+  //           total degree) is exactly 2 — its anchor link plus one mesh link — its mesh link
+  //           flips (mesh partner -> portal) if that partner is just as close, or closer, to
   //           whatever comes right after this portal in the walk: i.e. this portal wasn't
-  //           really "on the way". Rather than also flipping its anchor link (which would cost
-  //           an anchor outgoing slot for no real benefit), the portal is instead relocated in
-  //           the WALK/DISPLAY order only (thisplugin.displayOrderGuids — see above): among
-  //           every consecutive pair in the whole walk (not just near the mesh partner above,
-  //           which was picked for field-geometry reasons and can sit far away), it's inserted
-  //           between whichever pair minimizes the added detour (cheapest insertion), so it
-  //           lands genuinely on the way between two portals already walked back-to-back —
-  //           wherever those happen to be. Its anchor link then throws normally (portal ->
-  //           anchor) since that's no longer a costly detour either. Other portals throwing
-  //           INTO it later doesn't disqualify it either way — those links exist regardless and
-  //           never required it to do anything.
+  //           really "on the way". Rather than also flipping its anchor link, the portal is
+  //           instead relocated in the WALK/DISPLAY order only (thisplugin.displayOrderGuids —
+  //           see above), to wherever in the whole walk adds the least extra distance
+  //           (cheapest insertion), while never landing after a portal that throws a link at
+  //           it — see computeDistanceOrderReordering for the details.
   // ALGO ("Algorithm", no automatic override) still exists internally as the target of a full
   // "Reset link orders" (Task List), but the menu button no longer cycles through it — it
   // toggles only between KEYS and DISTANCE, which default to DISTANCE ("Less walking").
@@ -3099,38 +3092,20 @@ function wrapper(plugin_info) {
     return { incomingCount: incomingCount, invalidCount: invalidCount };
   };
 
-  // "Less walking": what matters is a portal's own OUTGOING count as the base algorithm
-  // computed it — not its total degree. A portal that other portals also happen to throw
-  // links AT (later, "from outside") is unaffected by any of this: those incoming links exist
-  // regardless and never require this portal to do anything.
+  // "Less walking": a portal whose own OUTGOING count is exactly 2 (its anchor link plus one
+  // mesh link) is a candidate. Its mesh link flips to point AT it (mesh partner -> portal)
+  // when that partner is just as close, or closer, to whatever comes right after this portal
+  // in the walk — i.e. this portal wasn't really "on the way", so the partner can throw
+  // straight to the next stop instead. A portal with outgoing count 1 or 3+ is left untouched.
   //
-  // A portal with exactly 2 outgoing links (its anchor link + one mesh link) is a CANDIDATE,
-  // but its mesh link only actually flips when the portal isn't really "on the way": comparing
-  // its mesh partner P to this portal (D1 = distance(P, portal)) against P to whatever comes
-  // right after this portal in the walk (D2 = distance(P, next)) — if D2 < D1, going straight
-  // from P to the next stop is no farther than the current detour through this portal, so P
-  // can throw to it instead and the walk skips the extra stop-and-throw here. If D2 >= D1, the
-  // portal genuinely sits on the way to the next stop, so its mesh link is left alone.
-  // Rather than also flipping the anchor link (which would spend an anchor outgoing slot just
-  // to dodge a walking detour), the portal is instead relocated in the WALK/DISPLAY order only
+  // Once flipped, the portal is relocated in the WALK/DISPLAY order only
   // (thisplugin.displayOrderGuids — see computeDistanceOrderReordering), never in
-  // thisplugin.sortedFanpoints itself: the core algorithm only ever considers, for each
-  // portal, the portals that precede it in sortedFanpoints as link partners, so reordering
-  // that array would silently change which links/fields exist — exactly what this feature must
-  // never do. The relocation target has nothing to do with the mesh partner picked above (that
-  // partner was chosen by the base algorithm for field-geometry reasons, and can easily sit far
-  // away): the portal is dropped wherever in the CURRENT walk — anywhere, not just next to its
-  // partner — adds the least extra distance, exactly like a step of the classic "cheapest
-  // insertion" TSP heuristic. This only changes where the portal shows up in the Task List,
-  // on-map position numbers, the "Path" preview, navigation, and bookmarks — every link still
-  // exists between the exact same two portals, in whichever direction the flips above settled
-  // on. Relocated portals are recorded in thisplugin.relocatedForLessWalkingGuids purely so the
-  // Task List can flag them: since they're no longer visited in their "natural" position, they
-  // must already be captured — with enough of their own keys gathered — by the time the walk
-  // reaches that earlier spot.
-  // A portal whose own outgoing count is 1 (just its anchor link) or 3+ is left untouched —
-  // the latter is a nested-field hub whose link order the algorithm depends on, where the
-  // extra walking is unavoidable.
+  // thisplugin.sortedFanpoints: the core algorithm builds links/fields from that array, so
+  // reordering it would change the plan itself, not just how it's walked. Its anchor link then
+  // throws normally, and relocated portals are recorded in
+  // thisplugin.relocatedForLessWalkingGuids so the Task List can flag them (green): since
+  // they're no longer visited in their "natural" position, they must already be captured —
+  // with enough of their own keys gathered — by the time the walk reaches that earlier spot.
   thisplugin.computeDistanceOrderFlips = function () {
     var edges = thisplugin.buildLinkOrderEdges();
     var naturalByKey = thisplugin.getNaturalMeshDirections(edges);
@@ -3154,9 +3129,7 @@ function wrapper(plugin_info) {
 
     var current = edges.map(function (e) { return $.extend({}, e); });
 
-    // Portals whose mesh link actually flips below — these are the ones relocated further
-    // down. Reordering (computeDistanceOrderReordering) doesn't care which partner a relocated
-    // portal ended up with; it just finds the cheapest spot for it in the whole walk.
+    // Portals whose mesh link actually flips below — these are the ones relocated further down.
     var meshFlippedGuids = {};
 
     // Mesh links: only the current thrower can qualify (its own 2 outgoing links are the fan
@@ -3191,24 +3164,14 @@ function wrapper(plugin_info) {
     var flips = thisplugin.flipsFromDirections(current, naturalByKey);
 
     // Every portal that throws a link AT a given guid, in the final (post-flip) direction —
-    // not just its flipped mesh link: a relocated portal can also receive an ordinary,
-    // never-touched incoming link from some unrelated portal (e.g. two different portals both
-    // happen to link to the same fan point), and whoever throws needs it already captured
-    // either way. computeDistanceOrderReordering uses this as a hard "must come before" bound
-    // — capturing it, and farming enough of its own keys, is only possible once it's actually
-    // been visited, so it can never be walked to AFTER something that throws to it.
+    // used by computeDistanceOrderReordering so a relocated portal never lands in the walk
+    // after something that needs it already captured.
     var incomingSourcesByGuid = {};
     current.forEach(function (e) {
       (incomingSourcesByGuid[e.dstGuid] = incomingSourcesByGuid[e.dstGuid] || []).push(e.srcGuid);
     });
 
-    // Relocate each flipped portal to wherever in the walk adds the least extra distance —
-    // not necessarily next to its mesh partner, which was picked by the base algorithm for
-    // field-geometry reasons and can sit far away geographically. Its anchor link is left
-    // alone (natural direction) — it's no longer a costly detour once relocated. This only
-    // ever writes to thisplugin.displayOrderGuids (a pure display/walk order), never to
-    // thisplugin.sortedFanpoints or thisplugin.manualOrderGuids (the Manage Portal Order
-    // feature's own, unrelated, BUILD-order override) — see thisplugin.getDisplayOrder().
+    // Relocate each flipped portal into the walk/display order.
     var reorderResult = thisplugin.computeDistanceOrderReordering(meshFlippedGuids, incomingSourcesByGuid);
     if (reorderResult) {
       thisplugin.displayOrderGuids = reorderResult.order;
@@ -3222,29 +3185,16 @@ function wrapper(plugin_info) {
   };
 
   // For each guid in relocateGuids, inserts it wherever in the current walk minimizes the
-  // extra distance added — a "cheapest insertion" step (classic TSP heuristic), not
-  // necessarily anywhere near the mesh partner that made it a candidate in the first place:
-  // that partner was chosen by the base algorithm for field-geometry reasons and can easily
-  // sit far away, while the portal itself may in fact be geographically embedded among
-  // completely different, unrelated portals — that's exactly where it belongs when walking.
-  // Every gap between two consecutive portals in the walk is a candidate — EXCEPT any gap at
-  // or past the earliest portal in incomingSourcesByGuid[guid] (whoever throws a link at this
-  // one, be it the flipped mesh link or an ordinary link the base algorithm never touched):
-  // that source needs this portal already captured, with enough of its own keys farmed, so it
-  // can never land later in the walk than every one of its sources — it must be visited in
-  // time, not just cheaply. Among the remaining, earlier gaps (plus appending after the last
-  // stop, when nothing constrains it at all), the one whose two endpoints are least stretched
-  // by detouring through this portal wins. Relocated portals are processed one at a time, in
-  // thisplugin.sortedFanpoints order, and each insertion updates the walk before the next
-  // portal is placed — so a portal relocated earlier in this same pass can itself become part
-  // of a later portal's cheapest gap (e.g. two portals that belong together end up next to
-  // each other) and can itself act as a "source" bound for one relocated later. This is purely
-  // a DISPLAY/WALK reorder: the returned order is only ever meant for
-  // thisplugin.displayOrderGuids, and must never be applied to thisplugin.sortedFanpoints or
-  // thisplugin.manualOrderGuids — the core algorithm only considers, for each portal, the
-  // portals preceding it in sortedFanpoints as link partners, so reordering that array (rather
-  // than just how it's walked/displayed) would silently change which links/fields the
-  // algorithm produces, not just their direction.
+  // extra distance added ("cheapest insertion", a classic TSP heuristic) — anywhere in the
+  // walk, not just next to the mesh partner that made it a candidate. The only restriction: it
+  // must land strictly before every portal in incomingSourcesByGuid[guid] (whoever throws a
+  // link at it), since it needs to already be captured, with enough of its own keys farmed, by
+  // then. Relocated portals are processed one at a time, in thisplugin.sortedFanpoints order,
+  // each insertion updating the walk before the next portal is placed, so two portals that
+  // belong together can end up next to each other. This is purely a DISPLAY/WALK reorder: the
+  // returned order is only ever meant for thisplugin.displayOrderGuids, never applied to
+  // thisplugin.sortedFanpoints or thisplugin.manualOrderGuids — the core algorithm decides
+  // which links/fields exist from sortedFanpoints alone.
   // Returns null if nothing moved, or { order: <full guid order, anchor first>, movedGuids:
   // <guid -> true, only for portals actually relocated> }.
   thisplugin.computeDistanceOrderReordering = function (relocateGuids, incomingSourcesByGuid) {
@@ -3279,13 +3229,13 @@ function wrapper(plugin_info) {
         if (srcIdx !== -1 && srcIdx < limit) limit = srcIdx;
       });
 
-      // Try every gap in the walk so far (between order[i] and order[i+1]) that still ends
-      // before `limit`, plus appending after the last stop when nothing bounds it at all —
-      // and keep whichever adds the least distance.
+      // Try every gap in the walk so far (between order[i] and order[i+1]) that keeps this
+      // portal before `limit`, plus appending after the last stop when nothing bounds it — and
+      // keep whichever adds the least distance.
       var bestIdx = -1;
       var bestCost = Infinity;
 
-      var maxGapStart = Math.min(order.length - 2, limit - 2);
+      var maxGapStart = Math.min(order.length - 2, limit - 1);
       for (var i = 0; i <= maxGapStart; i++) {
         var a = order[i], b = order[i + 1];
         var cost = dist(a, fp.guid) + dist(fp.guid, b) - dist(a, b);
@@ -3296,12 +3246,11 @@ function wrapper(plugin_info) {
         var lastCost = dist(order[order.length - 1], fp.guid);
         if (lastCost < bestCost) { bestCost = lastCost; bestIdx = order.length - 1; }
       } else if (bestIdx === -1 && limit >= 1) {
-        // No interior gap qualified (the earliest source sits right after the anchor) — the
-        // only spot left that still comes before it is right after the anchor itself.
+        // Earliest source sits right after the anchor — the only spot before it.
         bestIdx = 0;
       }
 
-      if (bestIdx === -1) return; // no valid spot at all (shouldn't normally happen), skip
+      if (bestIdx === -1) return; // no valid spot at all, skip
 
       order.splice(bestIdx + 1, 0, fp.guid);
       movedGuids[fp.guid] = true;
