@@ -2740,17 +2740,22 @@ function wrapper(plugin_info) {
   // and having it in the rotation was mostly confusing. If somehow not already DISTANCE or
   // KEYS (e.g. right after a Task List reset), the next click lands on DISTANCE, the default.
   // Never changes which links exist or which fields form — only how mesh links are oriented.
+  //
+  // Switching mode always starts a clean calculation from the base algorithm, rather than
+  // re-optimizing on top of whatever the previous mode left behind: manualLinkFlips still
+  // holding the old mode's flips would feed straight back into the core algorithm's own build
+  // pass (it consults isLinkFlipped() while constructing the plan, not only afterwards), so a
+  // leftover flip can steer that pass into a different plan than the clean one this mode should
+  // be optimizing from. Dropping the flips, "Less walking" relocations and walk/display order
+  // first guarantees the new mode always computes from the same untouched baseline.
   thisplugin.cycleLinkOrderMode = function () {
     thisplugin.linkOrderMode = (thisplugin.linkOrderMode === thisplugin.linkOrderModeENUM.DISTANCE)
       ? thisplugin.linkOrderModeENUM.KEYS
       : thisplugin.linkOrderModeENUM.DISTANCE;
 
-    if (thisplugin.linkOrderMode === thisplugin.linkOrderModeENUM.KEYS) {
-      // KEYS mode never relocates portals — drop any relocation left over from DISTANCE.
-      thisplugin.relocatedForLessWalkingGuids = {};
-      thisplugin.displayOrderGuids = null;
-    }
-    // Re-optimize on top of whatever the plan currently looks like (manual edits included).
+    thisplugin.manualLinkFlips = {};
+    thisplugin.relocatedForLessWalkingGuids = {};
+    thisplugin.displayOrderGuids = null;
     thisplugin._linkOrderRecomputePending = true;
 
     thisplugin.updateLinkOrderModeButton();
