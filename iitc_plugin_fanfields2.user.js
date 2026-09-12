@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.6.20260912
+// @version         2.8.7.20260913
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-12-210000';
+  plugin_info.dateTimeVersion = '2026-09-13-120000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,11 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.7',
+      changes: [
+        'FIX: Clicking a portal in the Task List threw an error on desktop (window.map.flyTo is not a function).',
+      ],
+    },{
       version: '2.8.6',
       changes: [
         'NEW: "Link order" menu button lets you choose how links are oriented, without changing the fanfield plan itself: keep the algorithm\'s own choice, optimize for fewer keys on any single portal, or optimize for less backtracking while walking the plan.',
@@ -871,7 +876,13 @@ function wrapper(plugin_info) {
 
   thisplugin.flyToPortal = function (latlng, guid) {
 
-    window.map.flyTo(latlng, map.getZoom());
+    // Compat: window.map.flyTo is not available on all IITC builds (desktop). Fall back to
+    // a plain setView, which every build supports.
+    if (typeof window.map.flyTo === 'function') {
+      window.map.flyTo(latlng, map.getZoom());
+    } else {
+      window.map.setView(latlng, map.getZoom());
+    }
     if (window.portals[guid]) window.renderPortalDetails(guid);
     else window.urlPortal = guid;
   }
