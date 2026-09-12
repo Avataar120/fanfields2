@@ -753,11 +753,14 @@ function wrapper(plugin_info) {
         '<p><b>Order & route planning</b><br>' +
         'Switch between <i>Clockwise</i> and <i>Counterclockwise</i> order to find an easier route or squeeze out extra fields. ' +
         'For fine control, open <i>Manage Portal Order</i> and drag &amp; drop portals to customise your visit order. ' +
-        'Use <i>Path</i> to preview a straight-line route along the current portal sequence. ' +
-        'The <i>Link&nbsp;order</i> button reorients some links (never the algorithm itself — which links exist, which fields form, stays the same): ' +
+        'Use <i>Path</i> to preview a straight-line route along the current portal sequence.</p>' +
+
+        '<p><b>Optim (link order)</b><br>' +
+        'The <i>Optim</i> button reorients some links (never the algorithm itself — which links exist, which fields form, stays the same): each click cycles between its two modes, shown in the button label. ' +
         '<i>Fewer&nbsp;keys</i> tries to lower the highest key count on any single portal. ' +
         '<i>Less&nbsp;walking</i> flips a 2-link portal\'s mesh link when it isn\'t really on the way to the next stop, and relocates that portal earlier in the visit order, right where it best fits between two portals already walked back-to-back — such relocated portals are highlighted green in the Task List as a reminder to capture them (and gather enough of their own keys) early. ' +
-        'Either mode is only a starting point — flip individual links, or reorder portals, afterwards as usual.</p>' +
+        'Switching mode always restarts the calculation clean, from the untouched algorithm — either mode is only a starting point, and you can still flip individual links, or reorder portals, afterwards as usual. ' +
+        'To drop every automatic and manual override at once and go back to the plain algorithm, use the Task List\'s <i>Reset&nbsp;link&nbsp;orders</i> button.</p>' +
 
         '<p><b>Freeze recalculation</b><br>' +
         'Use <i>🔒&nbsp;Locked</i> to prevent the script from recalculating while you zoom into details or work with large areas. ' +
@@ -2731,7 +2734,7 @@ function wrapper(plugin_info) {
 
   thisplugin.updateLinkOrderModeButton = function () {
     $('#plugin_fanfields2_linkorder_btn')
-      .html('Link&nbsp;order:&nbsp;' + thisplugin.getLinkOrderModeLabel());
+      .html('Optim:&nbsp;' + thisplugin.getLinkOrderModeLabel());
   };
 
   // Cycles the link order optimization mode (menu button) between KEYS ("Fewer keys") and
@@ -4485,7 +4488,7 @@ function wrapper(plugin_info) {
     // Link order optimization: leaves the algorithm itself untouched and only reorients mesh
     // links, either for fewer keys on any single portal or for less backtracking while walking.
     var buttonLinkOrder =
-      '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_linkorder_btn" onclick="window.plugin.fanfields.cycleLinkOrderMode();" title="Reorient mesh links (not the algorithm itself): fewer keys on any one portal, or less backtracking while walking">Link&nbsp;order:&nbsp;Less&nbsp;walking</a> ';
+      '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_linkorder_btn" onclick="window.plugin.fanfields.cycleLinkOrderMode();" title="Reorient mesh links (not the algorithm itself): fewer keys on any one portal, or less backtracking while walking">Optim:&nbsp;Less&nbsp;walking</a> ';
 
     // Shift anchor
     var buttonShiftAnchor =
