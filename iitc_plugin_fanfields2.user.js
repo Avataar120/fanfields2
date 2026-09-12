@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.5.20260912
+// @version         2.8.6.20260912
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-12-190000';
+  plugin_info.dateTimeVersion = '2026-09-12-210000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,11 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.6',
+      changes: [
+        'NEW: "Link order" menu button lets you choose how links are oriented, without changing the fanfield plan itself: keep the algorithm\'s own choice, optimize for fewer keys on any single portal, or optimize for less backtracking while walking the plan.',
+      ],
+    },{
       version: '2.8.5',
       changes: [
         'NEW: Task List strikes through a link line already made in-game for your faction (grey), and once all of a portal\'s links exist, fades and strikes through that whole portal line too (yellow). Toggle via the "Grey out done links" button.',
@@ -508,10 +513,86 @@ function wrapper(plugin_info) {
   thisplugin.manualOrderGuids = null;
   thisplugin.lastPlanSignature = null;
 
-  // Manual per-link direction overrides (Task List "flip" button).
+  // Manual per-link direction overrides (Task List "flip" button, and the "Fewer keys"
+  // optimizer below).
   // Keyed by undirected link key (getUndirectedLinkKey) -> true.
-  // Only applies to mesh links between fan points; the anchor's fan/star links are never flipped this way.
+  // The Task List's own ↔ button only ever touches mesh links between fan points — the
+  // anchor's own fan/star links can't be flipped that way.
   thisplugin.manualLinkFlips = {};
+
+  // "Less walking" (DISTANCE mode): portals it relocated earlier in the walk, right next to
+  // whichever portal already in the walk is closest to them (see computeDistanceOrderFlips).
+  // Keyed by guid -> true. Used only to highlight them in the Task List (green), as a reminder
+  // that this portal must already be captured, with enough of its own keys gathered, by the
+  // time the walk reaches that earlier spot — it's no longer visited in its "natural" position.
+  thisplugin.relocatedForLessWalkingGuids = {};
+
+  // "Less walking" (DISTANCE mode): the walk/display order it relocated portals into (see
+  // computeDistanceOrderReordering). This is a PURE DISPLAY order — never fed back into the
+  // core algorithm, which always builds its links/fields from thisplugin.sortedFanpoints
+  // (and thisplugin.manualOrderGuids, the Manage Portal Order feature's own, unrelated,
+  // BUILD-order override). The core algorithm only considers, for each portal, the portals
+  // that precede it in sortedFanpoints as possible link partners — reordering that array would
+  // silently change which links/fields exist, which is exactly what this feature must never
+  // do. thisplugin.getDisplayOrder() resolves this (or falls back to sortedFanpoints) for
+  // everything that only cares about the walking sequence: the Task List, the on-map position
+  // numbers, the "Path" preview, Google Maps navigation, Portal Route stops, and bookmarks
+  // order. null when no portal is currently relocated.
+  thisplugin.displayOrderGuids = null;
+
+  // Link order optimization (menu button "Link order"). This never touches the algorithm
+  // itself (which links exist, which fields form) — it only pre-fills / edits
+  // thisplugin.manualLinkFlips, the very same map the Task List's per-link ↔ button edits by
+  // hand, so the result is always just a starting point the user can keep tweaking manually.
+  // ALGO: pure algorithm, no automatic overrides.
+  // KEYS: greedy rebalancing of mesh link direction to lower the maximum keys needed at any
+  //       single portal.
+  // DISTANCE: when a portal's own OUTGOING count (as the base algorithm computed it — not its
+  //           total degree) is exactly 2 — its anchor link plus one mesh link — its mesh link
+  //           flips (mesh partner -> portal) if that partner is just as close, or closer, to
+  //           whatever comes right after this portal in the walk: i.e. this portal wasn't
+  //           really "on the way". Rather than also flipping its anchor link, the portal is
+  //           instead relocated in the WALK/DISPLAY order only (thisplugin.displayOrderGuids —
+  //           see above), to wherever in the whole walk adds the least extra distance
+  //           (cheapest insertion), while never landing after a portal that throws a link at
+  //           it — see computeDistanceOrderReordering for the details.
+  // ALGO ("Algorithm", no automatic override) still exists internally as the target of a full
+  // "Reset link orders" (Task List), but the menu button no longer cycles through it — it
+  // toggles only between KEYS and DISTANCE, which default to DISTANCE ("Less walking").
+  thisplugin.linkOrderModeENUM = { ALGO: 0, KEYS: 1, DISTANCE: 2 };
+  thisplugin.linkOrderMode = thisplugin.linkOrderModeENUM.DISTANCE;
+  // Set whenever something invalidates the active optimization (anchor/order/geometry change)
+  // so the next updateLayer() run recomputes it. Never set for a single manual flip via the
+  // Task List ↔ button — that's meant to stick until the user re-optimizes on purpose.
+  // Starts true so the default DISTANCE mode computes as soon as the very first plan exists.
+  thisplugin._linkOrderRecomputePending = true;
+
+  // The walk/display order: thisplugin.sortedFanpoints reordered per thisplugin.displayOrderGuids
+  // (the "Less walking" relocation — see above), or thisplugin.sortedFanpoints itself unchanged
+  // if there's no active relocation, or if displayOrderGuids no longer matches the current plan
+  // (stale guid set, wrong length, or a non-anchor first entry). Use this — never
+  // thisplugin.sortedFanpoints directly — for anything that only cares about the sequence a
+  // player actually walks: Task List rows/positions, on-map position numbers, the "Path"
+  // preview, Google Maps navigation, Portal Route stops, bookmark order. The core algorithm
+  // itself, and anything about which links/fields exist, must keep using thisplugin.sortedFanpoints.
+  thisplugin.getDisplayOrder = function () {
+    var sorted = thisplugin.sortedFanpoints || [];
+    var guids = thisplugin.displayOrderGuids;
+    if (!guids || guids.length !== sorted.length) return sorted;
+
+    var byGuid = {};
+    sorted.forEach(function (fp) { byGuid[fp.guid] = fp; });
+
+    var reordered = [];
+    for (var i = 0; i < guids.length; i++) {
+      var fp = byGuid[guids[i]];
+      if (!fp) return sorted; // stale guid set (plan changed since) — ignore it
+      reordered.push(fp);
+    }
+    if (reordered[0].guid !== thisplugin.startingpointGUID) return sorted; // anchor must stay first
+
+    return reordered;
+  };
 
   thisplugin.saveBookmarks = function () {
 
@@ -586,8 +667,8 @@ function wrapper(plugin_info) {
       console.log('Fanfields2: added BOOKMARKS portal ' + bookmark_ID);
     }
 
-    // loop again: ordered(!) to add them as bookmarks
-    thisplugin.sortedFanpoints.forEach(function (point, index) {
+    // loop again: ordered(!) to add them as bookmarks — the walk order, relocations included
+    thisplugin.getDisplayOrder().forEach(function (point, index) {
       if (point.guid) {
         var p = window.portals[point.guid];
         var ll = p.getLatLng();
@@ -606,6 +687,9 @@ function wrapper(plugin_info) {
     // Reset manual order and link flips because the start/anchor changed (ghi#23)
     thisplugin.manualOrderGuids = null;
     thisplugin.manualLinkFlips = {};
+    thisplugin.relocatedForLessWalkingGuids = {};
+    thisplugin.displayOrderGuids = null;
+    thisplugin.requestLinkOrderRecompute();
 
     thisplugin.updateLayer();
   }
@@ -670,6 +754,13 @@ function wrapper(plugin_info) {
         'Switch between <i>Clockwise</i> and <i>Counterclockwise</i> order to find an easier route or squeeze out extra fields. ' +
         'For fine control, open <i>Manage Portal Order</i> and drag &amp; drop portals to customise your visit order. ' +
         'Use <i>Path</i> to preview a straight-line route along the current portal sequence.</p>' +
+
+        '<p><b>Optim (link order)</b><br>' +
+        'The <i>Optim</i> button reorients some links (never the algorithm itself — which links exist, which fields form, stays the same): each click cycles between its two modes, shown in the button label. ' +
+        '<i>Fewer&nbsp;keys</i> tries to lower the highest key count on any single portal. ' +
+        '<i>Less&nbsp;walking</i> flips a 2-link portal\'s mesh link when it isn\'t really on the way to the next stop, and relocates that portal earlier in the visit order, right where it best fits between two portals already walked back-to-back — such relocated portals are highlighted green in the Task List as a reminder to capture them (and gather enough of their own keys) early. ' +
+        'Switching mode always restarts the calculation clean, from the untouched algorithm — either mode is only a starting point, and you can still flip individual links, or reorder portals, afterwards as usual. ' +
+        'To drop every automatic and manual override at once and go back to the plain algorithm, use the Task List\'s <i>Reset&nbsp;link&nbsp;orders</i> button.</p>' +
 
         '<p><b>Freeze recalculation</b><br>' +
         'Use <i>🔒&nbsp;Locked</i> to prevent the script from recalculating while you zoom into details or work with large areas. ' +
@@ -800,7 +891,7 @@ function wrapper(plugin_info) {
   };
 
   thisplugin.getPortalRouteStops = function () {
-    return thisplugin.sortedFanpoints.map(function (portal) {
+    return thisplugin.getDisplayOrder().map(function (portal) {
       var latlng = map.unproject(portal.point, thisplugin.PROJECT_ZOOM);
       var p = portal.portal || window.portals[portal.guid];
       var title = 'unknown title';
@@ -892,7 +983,11 @@ function wrapper(plugin_info) {
 
     var gmnav = 'http://maps.google.com/maps/dir/';
 
-    thisplugin.sortedFanpoints.forEach(function (portal, index) {
+    // The walk order (relocations from "Less walking" included) — never sortedFanpoints
+    // directly, which is the algorithm's own BUILD order and must stay untouched by display.
+    var displayOrder = thisplugin.getDisplayOrder();
+
+    displayOrder.forEach(function (portal, index) {
       var p, lat, lng;
       var latlng = map.unproject(portal.point, thisplugin.PROJECT_ZOOM);
       lat = Math.round(latlng.lat * 10000000) / 10000000
@@ -945,8 +1040,22 @@ function wrapper(plugin_info) {
       } else {
         availableKeysText = '>';
       };
+      // "Less walking" relocated this portal earlier in the walk (see computeDistanceOrderFlips):
+      // flag it so it's captured, with enough of its own keys gathered, ahead of schedule.
+      let isRelocatedForLessWalking = !!(thisplugin.relocatedForLessWalkingGuids && thisplugin.relocatedForLessWalkingGuids[portal.guid]);
+
+      // Both classes can apply at once (a relocated portal whose links are all already
+      // thrown): "relocated" is declared after "done" in the stylesheet, so its green color
+      // wins over "done"'s faded yellow, while "done"'s strikethrough still applies.
+      var portalRowClasses = [];
+      if (allOutgoingLinksDone) portalRowClasses.push('plugin_fanfields2_portal_done');
+      if (isRelocatedForLessWalking) portalRowClasses.push('plugin_fanfields2_portal_relocated');
+      var portalRowClass = portalRowClasses.join(' ');
+
       // Row start
-      text += '<tbody class="plugin_fanfields2_exportText_Portal"><tr' + (allOutgoingLinksDone ? ' class="plugin_fanfields2_portal_done"' : '') + '>';
+      text += '<tbody class="plugin_fanfields2_exportText_Portal"><tr' + (portalRowClass ? ' class="' + portalRowClass + '"' : '') +
+        (isRelocatedForLessWalking ? ' title="Relocated here by \'Less walking\': capture this portal and gather enough of its own keys by this point in the walk."' : '') +
+        '>';
       // List Item Index (Pos.)
       text += '<td>' + (index) + '</td>';
 
@@ -1009,12 +1118,12 @@ function wrapper(plugin_info) {
           // Row start
           let linkDetailText = '<tr' + (linkDone ? ' class="plugin_fanfields2_link_done"' : '') + '>';
 
-          // List Item Index (Pos.)
-          linkDetailText += '<td>' + (index) + '.' + thisplugin.sortedFanpoints.indexOf(outPortal) + '</td>';
+          // List Item Index (Pos.) — the target's WALK position, not its build-order index.
+          linkDetailText += '<td>' + (index) + '.' + displayOrder.indexOf(outPortal) + '</td>';
 
           // Action
           linkDetailText += '<td>';
-          linkDetailText += 'Link to ' + thisplugin.sortedFanpoints.indexOf(outPortal);
+          linkDetailText += 'Link to ' + displayOrder.indexOf(outPortal);
           if (meta && meta.invalidUnderField) {
             linkDetailText += ' <span class="plugin_fanfields2_warn" title="Cannot throw from under an existing field (limit ' + thisplugin.maxLinkUnderFieldDistance + 'm).">⚠</span>';
             if (meta.canFlipUnderField) {
@@ -1298,6 +1407,13 @@ function wrapper(plugin_info) {
             color: #828284 !important;
             text-decoration: line-through !important;
           }
+
+          tr.plugin_fanfields2_portal_relocated,
+          tr.plugin_fanfields2_portal_relocated td,
+          tr.plugin_fanfields2_portal_relocated a,
+          tr.plugin_fanfields2_portal_relocated span {
+            color: #2E7D32 !important;
+          }
         `;
 
 
@@ -1555,6 +1671,7 @@ function wrapper(plugin_info) {
         .off('click')
         .on('click', function () {
           that.manualOrderGuids = null;
+          that.requestLinkOrderRecompute();
           that.updateLayer();
 
 
@@ -1585,6 +1702,7 @@ function wrapper(plugin_info) {
             that.showUnderFieldWarningOnce = true;
           }
 
+          that.requestLinkOrderRecompute();
           that.delayedUpdateLayer(0.2);
           $('#plugin_fanfields2_order_dialog')
             .dialog('close');
@@ -1791,6 +1909,9 @@ function wrapper(plugin_info) {
     // Reset the order and link flips – new geometry, new base ordering (ghi#23)
     thisplugin.manualOrderGuids = null;
     thisplugin.manualLinkFlips = {};
+    thisplugin.relocatedForLessWalkingGuids = {};
+    thisplugin.displayOrderGuids = null;
+    thisplugin.requestLinkOrderRecompute();
 
     $('#plugin_fanfields2_clckwsbtn')
       .html(clockwiseWord + '&nbsp;' + clockwiseSymbol + '');
@@ -2074,6 +2195,17 @@ function wrapper(plugin_info) {
       'tr.plugin_fanfields2_portal_done span {\n' +
       '  color: rgba(255, 206, 0, 0.35) !important;\n' +
       '  text-decoration: line-through !important;\n' +
+      '}\n'
+    );
+
+    // Task List: a portal relocated earlier in the walk by "Less walking" is highlighted
+    // green, as a reminder to capture it (and gather enough of its own keys) ahead of schedule.
+    addCSS('\n' +
+      'tr.plugin_fanfields2_portal_relocated,\n' +
+      'tr.plugin_fanfields2_portal_relocated td,\n' +
+      'tr.plugin_fanfields2_portal_relocated a,\n' +
+      'tr.plugin_fanfields2_portal_relocated span {\n' +
+      '  color: #4CAF50 !important;\n' +
       '}\n'
     );
 
@@ -2566,9 +2698,71 @@ function wrapper(plugin_info) {
   };
 
   // Drop all manual link-direction overrides at once (Task List "Reset link orders" button).
+  // Also drops back to the plain algorithm mode, since a leftover "Fewer keys"/"Less walking"
+  // label next to zero overrides would be misleading, and reverts any portal relocated by
+  // "Less walking" back to its natural spot in the walk.
   thisplugin.resetLinkFlips = function () {
     thisplugin.manualLinkFlips = {};
+    thisplugin.relocatedForLessWalkingGuids = {};
+    thisplugin.displayOrderGuids = null; // never the user's own Manage Portal Order (manualOrderGuids)
+    thisplugin.linkOrderMode = thisplugin.linkOrderModeENUM.ALGO;
+    thisplugin.updateLinkOrderModeButton();
     thisplugin.updateLayer();
+  };
+
+  // Marks the active link order optimization (if any) as needing to be recomputed at the next
+  // updateLayer() run. Called wherever the plan's structural basis changes (anchor, visit
+  // order, geometry) — never for a single manual flip via the Task List ↔ button, which is
+  // meant to stick as-is until the user re-optimizes on purpose.
+  thisplugin.requestLinkOrderRecompute = function () {
+    if (thisplugin.linkOrderMode !== thisplugin.linkOrderModeENUM.ALGO) {
+      thisplugin._linkOrderRecomputePending = true;
+    }
+  };
+
+  thisplugin.getLinkOrderModeLabel = function () {
+    switch (thisplugin.linkOrderMode) {
+      case thisplugin.linkOrderModeENUM.KEYS:
+        return 'Fewer keys';
+      case thisplugin.linkOrderModeENUM.DISTANCE:
+        return 'Less walking';
+      case thisplugin.linkOrderModeENUM.ALGO:
+      default:
+        return 'Algorithm';
+    }
+  };
+
+  thisplugin.updateLinkOrderModeButton = function () {
+    $('#plugin_fanfields2_linkorder_btn')
+      .html('Optim:&nbsp;' + thisplugin.getLinkOrderModeLabel());
+  };
+
+  // Cycles the link order optimization mode (menu button) between KEYS ("Fewer keys") and
+  // DISTANCE ("Less walking") — ALGO ("Algorithm", no override) is no longer a cycle stop,
+  // since "Reset link orders" in the Task List already covers "go back to the base algorithm"
+  // and having it in the rotation was mostly confusing. If somehow not already DISTANCE or
+  // KEYS (e.g. right after a Task List reset), the next click lands on DISTANCE, the default.
+  // Never changes which links exist or which fields form — only how mesh links are oriented.
+  //
+  // Switching mode always starts a clean calculation from the base algorithm, rather than
+  // re-optimizing on top of whatever the previous mode left behind: manualLinkFlips still
+  // holding the old mode's flips would feed straight back into the core algorithm's own build
+  // pass (it consults isLinkFlipped() while constructing the plan, not only afterwards), so a
+  // leftover flip can steer that pass into a different plan than the clean one this mode should
+  // be optimizing from. Dropping the flips, "Less walking" relocations and walk/display order
+  // first guarantees the new mode always computes from the same untouched baseline.
+  thisplugin.cycleLinkOrderMode = function () {
+    thisplugin.linkOrderMode = (thisplugin.linkOrderMode === thisplugin.linkOrderModeENUM.DISTANCE)
+      ? thisplugin.linkOrderModeENUM.KEYS
+      : thisplugin.linkOrderModeENUM.DISTANCE;
+
+    thisplugin.manualLinkFlips = {};
+    thisplugin.relocatedForLessWalkingGuids = {};
+    thisplugin.displayOrderGuids = null;
+    thisplugin._linkOrderRecomputePending = true;
+
+    thisplugin.updateLinkOrderModeButton();
+    thisplugin.delayedUpdateLayer(0.2);
   };
 
   // Strict point-in-triangle test in projection space:
@@ -2606,7 +2800,9 @@ function wrapper(plugin_info) {
   // Marks impossible links, computes a "valid" triangle list (fields that can actually be created),
   // and provides per-portal counts that ignore invalid links.
   thisplugin.validateUnderFieldLinks = function () {
-    var sorted = thisplugin.sortedFanpoints || [];
+    // Walk order (relocations included) — "under field" validity depends on when a portal is
+    // actually visited, which is the walk/display order, not the algorithm's own build order.
+    var sorted = thisplugin.getDisplayOrder();
     if (sorted.length < 3) {
       thisplugin.invalidUnderFieldLinks = {};
       thisplugin.validTriangles = null;
@@ -2784,6 +2980,363 @@ function wrapper(plugin_info) {
     }
   };
 
+  // ---------------------------------------------------------------------
+  // Link order optimization (menu button "Link order: Algorithm / Fewer
+  // keys / Less walking"). This never changes which links exist or which
+  // fields form — thisplugin.updateLayer()'s main algorithm decides that,
+  // exactly as before. It only decides, for mesh links between two fan
+  // points (never the anchor's own fan/star links), which end throws to
+  // the other, by writing into thisplugin.manualLinkFlips — the very same
+  // map the Task List's per-link ↔ button edits by hand.
+  // ---------------------------------------------------------------------
+
+  // Collects the flip-invariant "shape" of the current plan: for every accepted link (fan and
+  // mesh), its two endpoints, distance and field-creation prerequisites, using whatever
+  // direction thisplugin.updateLayer() just settled on for this run (manual flips included).
+  thisplugin.buildLinkOrderEdges = function () {
+    var edges = [];
+    (thisplugin.sortedFanpoints || []).forEach(function (fp) {
+      fp.outgoing.forEach(function (target) {
+        var meta = fp.outgoingMeta ? fp.outgoingMeta[target.guid] : null;
+        edges.push({
+          key: thisplugin.getUndirectedLinkKey(fp.guid, target.guid),
+          isFanLink: (fp.guid === thisplugin.startingpointGUID || target.guid === thisplugin.startingpointGUID),
+          srcGuid: fp.guid,
+          dstGuid: target.guid,
+          distance: thisplugin.distanceTo(fp.point, target.point),
+          creatingFieldsWith: (meta && meta.creatingFieldsWith) ? meta.creatingFieldsWith : []
+        });
+      });
+    });
+    return edges;
+  };
+
+  // For every mesh edge, the direction it would have WITHOUT any manual flip — i.e. reversed
+  // from its current direction if it's currently in manualLinkFlips, unchanged otherwise.
+  thisplugin.getNaturalMeshDirections = function (edges) {
+    var natural = {};
+    edges.forEach(function (e) {
+      if (e.isFanLink) return;
+      natural[e.key] = thisplugin.manualLinkFlips[e.key]
+        ? { srcGuid: e.dstGuid, dstGuid: e.srcGuid }
+        : { srcGuid: e.srcGuid, dstGuid: e.dstGuid };
+    });
+    return natural;
+  };
+
+  // Converts a final set of mesh edge directions back into a manualLinkFlips-shaped map:
+  // flipped (true) wherever the final direction differs from the natural one.
+  thisplugin.flipsFromDirections = function (edges, naturalByKey) {
+    var flips = {};
+    edges.forEach(function (e) {
+      if (e.isFanLink) return;
+      var natural = naturalByKey[e.key];
+      if (natural && e.srcGuid !== natural.srcGuid) flips[e.key] = true;
+    });
+    return flips;
+  };
+
+  // Pure re-simulation of the "under field" walk (mirrors the core logic of
+  // thisplugin.validateUnderFieldLinks, kept separate so exploring flip candidates never
+  // touches the live per-portal state that function maintains). `edges` carry a resolved
+  // direction (srcGuid/dstGuid already reflect the candidate being evaluated). Returns
+  // per-portal incoming ("keys needed") counts and how many links would become impossible
+  // to throw from underneath an existing field.
+  thisplugin.simulateDirectedPlan = function (edges) {
+    var sorted = thisplugin.sortedFanpoints || [];
+    var outgoingByGuid = {};
+    var incomingCount = {};
+    var pointByGuid = {};
+    var pointToGuid = {};
+
+    sorted.forEach(function (fp) {
+      outgoingByGuid[fp.guid] = [];
+      incomingCount[fp.guid] = 0;
+      pointByGuid[fp.guid] = fp.point;
+      pointToGuid[thisplugin.pointKey(fp.point)] = fp.guid;
+    });
+
+    edges.forEach(function (e) {
+      if (outgoingByGuid[e.srcGuid]) outgoingByGuid[e.srcGuid].push(e);
+    });
+
+    var builtLinks = {};
+    (thisplugin.existingIntelPlanLinks || []).forEach(function (link) {
+      if (link.guidA && link.guidB) builtLinks[thisplugin.getUndirectedLinkKey(link.guidA, link.guidB)] = true;
+    });
+
+    var validTriangles = [];
+    var invalidCount = 0;
+
+    for (var vi = 0; vi < sorted.length; vi++) {
+      var srcGuid = sorted[vi].guid;
+      var srcUnder = thisplugin.isPointUnderAnyTriangle(sorted[vi].point, validTriangles);
+
+      var outs = outgoingByGuid[srcGuid] || [];
+      for (var oi = 0; oi < outs.length; oi++) {
+        var e = outs[oi];
+        var dstGuid = e.dstGuid;
+
+        if (srcUnder && e.distance > thisplugin.maxLinkUnderFieldDistance) {
+          invalidCount++;
+          continue;
+        }
+
+        incomingCount[dstGuid] = (incomingCount[dstGuid] || 0) + 1;
+        builtLinks[thisplugin.getUndirectedLinkKey(srcGuid, dstGuid)] = true;
+
+        (e.creatingFieldsWith || []).forEach(function (thirdPoint) {
+          var thirdGuid = pointToGuid[thisplugin.pointKey(thirdPoint)];
+          if (!thirdGuid) return;
+          var e1 = thisplugin.getUndirectedLinkKey(srcGuid, thirdGuid);
+          var e2 = thisplugin.getUndirectedLinkKey(dstGuid, thirdGuid);
+          if (builtLinks[e1] && builtLinks[e2]) {
+            validTriangles.push({ a: thirdPoint, b: pointByGuid[srcGuid], c: pointByGuid[dstGuid] });
+          }
+        });
+      }
+    }
+
+    return { incomingCount: incomingCount, invalidCount: invalidCount };
+  };
+
+  // "Less walking": a portal whose own OUTGOING count is exactly 2 (its anchor link plus one
+  // mesh link) is a candidate. Its mesh link flips to point AT it (mesh partner -> portal)
+  // when that partner is just as close, or closer, to whatever comes right after this portal
+  // in the walk — i.e. this portal wasn't really "on the way", so the partner can throw
+  // straight to the next stop instead. A portal with outgoing count 1 or 3+ is left untouched.
+  //
+  // Once flipped, the portal is relocated in the WALK/DISPLAY order only
+  // (thisplugin.displayOrderGuids — see computeDistanceOrderReordering), never in
+  // thisplugin.sortedFanpoints: the core algorithm builds links/fields from that array, so
+  // reordering it would change the plan itself, not just how it's walked. Its anchor link then
+  // throws normally, and relocated portals are recorded in
+  // thisplugin.relocatedForLessWalkingGuids so the Task List can flag them (green): since
+  // they're no longer visited in their "natural" position, they must already be captured —
+  // with enough of their own keys gathered — by the time the walk reaches that earlier spot.
+  thisplugin.computeDistanceOrderFlips = function () {
+    var edges = thisplugin.buildLinkOrderEdges();
+    var naturalByKey = thisplugin.getNaturalMeshDirections(edges);
+
+    var sorted = thisplugin.sortedFanpoints || [];
+
+    // Each portal's own outgoing count, exactly as the base algorithm computed it for this
+    // run (before this optimizer touches anything), plus its walk position and point.
+    var outgoingCountByGuid = {};
+    var indexByGuid = {};
+    var pointByGuid = {};
+    sorted.forEach(function (fp, idx) {
+      outgoingCountByGuid[fp.guid] = fp.outgoing.length;
+      indexByGuid[fp.guid] = idx;
+      pointByGuid[fp.guid] = fp.point;
+    });
+
+    function dist(guidA, guidB) {
+      return thisplugin.distanceTo(pointByGuid[guidA], pointByGuid[guidB]);
+    }
+
+    var current = edges.map(function (e) { return $.extend({}, e); });
+
+    // Portals whose mesh link actually flips below — these are the ones relocated further down.
+    var meshFlippedGuids = {};
+
+    // Mesh links: only the current thrower can qualify (its own 2 outgoing links are the fan
+    // link plus exactly this one mesh link) — flip it to point at the thrower only if the
+    // distance test says it isn't really on the way to the next stop.
+    current.forEach(function (e) {
+      if (e.isFanLink) return;
+      if (outgoingCountByGuid[e.srcGuid] !== 2) return;
+
+      var nextFp = sorted[indexByGuid[e.srcGuid] + 1];
+      if (!nextFp) return; // last portal in the walk, nothing to compare against
+
+      var d1 = dist(e.dstGuid, e.srcGuid);
+      var d2 = dist(e.dstGuid, nextFp.guid);
+      if (!(d2 < d1)) return; // this portal is genuinely on the way, leave it throwing
+
+      var desiredSrc = e.dstGuid;
+      var desiredDst = e.srcGuid;
+
+      var before = thisplugin.simulateDirectedPlan(current);
+      var trial = current.map(function (other) {
+        return (other.key === e.key) ? $.extend({}, other, { srcGuid: desiredSrc, dstGuid: desiredDst }) : other;
+      });
+      var after = thisplugin.simulateDirectedPlan(trial);
+      if (after.invalidCount > before.invalidCount) return; // required for feasibility, keep as-is
+
+      meshFlippedGuids[e.srcGuid] = true;
+      e.srcGuid = desiredSrc;
+      e.dstGuid = desiredDst;
+    });
+
+    var flips = thisplugin.flipsFromDirections(current, naturalByKey);
+
+    // Every portal that throws a link AT a given guid, in the final (post-flip) direction —
+    // used by computeDistanceOrderReordering so a relocated portal never lands in the walk
+    // after something that needs it already captured.
+    var incomingSourcesByGuid = {};
+    current.forEach(function (e) {
+      (incomingSourcesByGuid[e.dstGuid] = incomingSourcesByGuid[e.dstGuid] || []).push(e.srcGuid);
+    });
+
+    // Relocate each flipped portal into the walk/display order.
+    var reorderResult = thisplugin.computeDistanceOrderReordering(meshFlippedGuids, incomingSourcesByGuid);
+    if (reorderResult) {
+      thisplugin.displayOrderGuids = reorderResult.order;
+      thisplugin.relocatedForLessWalkingGuids = reorderResult.movedGuids;
+    } else {
+      thisplugin.displayOrderGuids = null;
+      thisplugin.relocatedForLessWalkingGuids = {};
+    }
+
+    return flips;
+  };
+
+  // For each guid in relocateGuids, inserts it wherever in the current walk minimizes the
+  // extra distance added ("cheapest insertion", a classic TSP heuristic) — anywhere in the
+  // walk, not just next to the mesh partner that made it a candidate. The only restriction: it
+  // must land strictly before every portal in incomingSourcesByGuid[guid] (whoever throws a
+  // link at it), since it needs to already be captured, with enough of its own keys farmed, by
+  // then. Relocated portals are processed one at a time, in thisplugin.sortedFanpoints order,
+  // each insertion updating the walk before the next portal is placed, so two portals that
+  // belong together can end up next to each other. This is purely a DISPLAY/WALK reorder: the
+  // returned order is only ever meant for thisplugin.displayOrderGuids, never applied to
+  // thisplugin.sortedFanpoints or thisplugin.manualOrderGuids — the core algorithm decides
+  // which links/fields exist from sortedFanpoints alone.
+  // Returns null if nothing moved, or { order: <full guid order, anchor first>, movedGuids:
+  // <guid -> true, only for portals actually relocated> }.
+  thisplugin.computeDistanceOrderReordering = function (relocateGuids, incomingSourcesByGuid) {
+    var sorted = thisplugin.sortedFanpoints || [];
+    if (!sorted.length) return null;
+
+    var pointByGuid = {};
+    sorted.forEach(function (fp) { pointByGuid[fp.guid] = fp.point; });
+
+    function dist(guidA, guidB) {
+      return thisplugin.distanceTo(pointByGuid[guidA], pointByGuid[guidB]);
+    }
+
+    // Everyone NOT being relocated, kept in their original relative order — the starting
+    // walk that relocated portals get inserted into, one at a time.
+    var order = sorted
+      .filter(function (fp) { return !relocateGuids[fp.guid]; })
+      .map(function (fp) { return fp.guid; });
+
+    var movedGuids = {};
+
+    sorted.forEach(function (fp) {
+      if (!relocateGuids[fp.guid]) return;
+
+      // How far into the walk this portal is allowed to land: strictly before the earliest
+      // of its known sources (skip a source not yet placed — can't bound against a position
+      // that doesn't exist yet). No known source at all means no bound: `limit` stays at
+      // order.length, so appending at the very end is fair game too.
+      var limit = order.length;
+      (incomingSourcesByGuid[fp.guid] || []).forEach(function (srcGuid) {
+        var srcIdx = order.indexOf(srcGuid);
+        if (srcIdx !== -1 && srcIdx < limit) limit = srcIdx;
+      });
+
+      // Try every gap in the walk so far (between order[i] and order[i+1]) that keeps this
+      // portal before `limit`, plus appending after the last stop when nothing bounds it — and
+      // keep whichever adds the least distance.
+      var bestIdx = -1;
+      var bestCost = Infinity;
+
+      var maxGapStart = Math.min(order.length - 2, limit - 1);
+      for (var i = 0; i <= maxGapStart; i++) {
+        var a = order[i], b = order[i + 1];
+        var cost = dist(a, fp.guid) + dist(fp.guid, b) - dist(a, b);
+        if (cost < bestCost) { bestCost = cost; bestIdx = i; }
+      }
+
+      if (limit >= order.length) {
+        var lastCost = dist(order[order.length - 1], fp.guid);
+        if (lastCost < bestCost) { bestCost = lastCost; bestIdx = order.length - 1; }
+      } else if (bestIdx === -1 && limit >= 1) {
+        // Earliest source sits right after the anchor — the only spot before it.
+        bestIdx = 0;
+      }
+
+      if (bestIdx === -1) return; // no valid spot at all, skip
+
+      order.splice(bestIdx + 1, 0, fp.guid);
+      movedGuids[fp.guid] = true;
+    });
+
+    var moved = Object.keys(movedGuids).length > 0;
+    return moved ? { order: order, movedGuids: movedGuids } : null;
+  };
+
+  // "Fewer keys": greedily re-orients mesh links (any of them, not just 2-link portals) to
+  // lower the highest number of keys any single portal needs, never accepting a change that
+  // would make a link impossible to throw from underneath an existing field. This is a
+  // heuristic (repeated local improvement), not a proven-optimal balance.
+  thisplugin.computeKeysOrderFlips = function () {
+    var edges = thisplugin.buildLinkOrderEdges();
+    var naturalByKey = thisplugin.getNaturalMeshDirections(edges);
+
+    var current = edges.map(function (e) { return $.extend({}, e); });
+    var meshEdges = current.filter(function (e) { return !e.isFanLink; });
+
+    var maxIterations = Math.min(500, Math.max(50, meshEdges.length * 10));
+    var stuckGuids = {};
+
+    for (var iter = 0; iter < maxIterations; iter++) {
+      var state = thisplugin.simulateDirectedPlan(current);
+
+      // Pick the not-yet-stuck portal with the highest key count.
+      var targetGuid = null, targetCount = 0;
+      Object.keys(state.incomingCount).forEach(function (guid) {
+        if (stuckGuids[guid]) return;
+        if (state.incomingCount[guid] > targetCount) {
+          targetCount = state.incomingCount[guid];
+          targetGuid = guid;
+        }
+      });
+      if (targetGuid === null) break; // nothing left worth balancing
+
+      // Candidate flips: mesh links currently pointing INTO targetGuid.
+      var candidates = meshEdges.filter(function (e) { return e.dstGuid === targetGuid; });
+      if (candidates.length === 0) {
+        stuckGuids[targetGuid] = true;
+        continue;
+      }
+
+      var bestEdge = null, bestMax = targetCount, bestOtherCount = Infinity;
+      candidates.forEach(function (e) {
+        var trial = current.map(function (other) {
+          return (other.key === e.key) ? $.extend({}, other, { srcGuid: e.dstGuid, dstGuid: e.srcGuid }) : other;
+        });
+        var trialState = thisplugin.simulateDirectedPlan(trial);
+        if (trialState.invalidCount > state.invalidCount) return; // never trade feasibility away
+
+        var trialMax = 0;
+        Object.keys(trialState.incomingCount).forEach(function (guid) {
+          if (trialState.incomingCount[guid] > trialMax) trialMax = trialState.incomingCount[guid];
+        });
+        var otherCount = trialState.incomingCount[e.srcGuid] || 0;
+
+        if (trialMax < bestMax || (trialMax === bestMax && otherCount < bestOtherCount)) {
+          bestMax = trialMax;
+          bestOtherCount = otherCount;
+          bestEdge = e;
+        }
+      });
+
+      if (bestEdge === null) {
+        stuckGuids[targetGuid] = true;
+        continue;
+      }
+
+      var newSrc = bestEdge.dstGuid, newDst = bestEdge.srcGuid;
+      bestEdge.srcGuid = newSrc;
+      bestEdge.dstGuid = newDst;
+    }
+
+    return thisplugin.flipsFromDirections(current, naturalByKey);
+  };
+
 
 
 
@@ -2832,7 +3385,7 @@ function wrapper(plugin_info) {
 
     lg.clearLayers();
 
-    var sorted = that.sortedFanpoints || [];
+    var sorted = that.getDisplayOrder();
     if (sorted.length < 2) return;
 
     // Draw the route as a polyline
@@ -3161,6 +3714,9 @@ function wrapper(plugin_info) {
       thisplugin.lastPlanSignature !== currentSignature) {
 
       thisplugin.manualLinkFlips = {};
+      thisplugin.relocatedForLessWalkingGuids = {};
+      thisplugin.displayOrderGuids = null;
+      thisplugin.requestLinkOrderRecompute();
 
       if (thisplugin.showOrderPath) {
         thisplugin.setOrderPathActive(false);
@@ -3497,12 +4053,16 @@ function wrapper(plugin_info) {
         bearing = this.getBearing(a, b);
         const distance = thisplugin.distanceTo(a, b);
 
-        // ghi#23 (link flip): manual direction override for mesh links (never for the anchor's fan/star links).
-        var flipped = (pb !== 0) && thisplugin.isLinkFlipped(this.sortedFanpoints[pa].guid, this.sortedFanpoints[pb].guid);
+        // ghi#23 (link flip): manual direction override. Almost always a mesh link; a portal's
+        // own anchor link (pb === 0) can technically be flipped too, handled below via the same
+        // SBUL capacity check as radiating mode, though no automatic optimizer currently
+        // produces such a flip.
+        var flipped = thisplugin.isLinkFlipped(this.sortedFanpoints[pa].guid, this.sortedFanpoints[pb].guid);
 
         if (pb === 0) {
           var maxLinks = 8 + thisplugin.availableSBUL * 8;
-          if (thisplugin.stardirection === thisplugin.starDirENUM.RADIATING && centerOutgoings < maxLinks) {
+          var wantOutbound = (thisplugin.stardirection === thisplugin.starDirENUM.RADIATING) || flipped;
+          if (wantOutbound && centerOutgoings < maxLinks) {
             outbound = 1;
           } else {
             thisplugin.centerKeys++;
@@ -3519,11 +4079,16 @@ function wrapper(plugin_info) {
           b = paPoint;
         }
 
+        // The actual direction was swapped either by anchor-link capacity (outbound) or by a
+        // mesh-link flip — never by `flipped` alone for pb === 0, since capacity may have
+        // refused the swap above and fallen back to the default direction.
+        var swapped = (pb === 0) ? (outbound === 1) : flipped;
+
         possibleline = {
           a: a,
           b: b,
-          guidA: (outbound === 1 || flipped) ? this.sortedFanpoints[pb].guid : this.sortedFanpoints[pa].guid,
-          guidB: (outbound === 1 || flipped) ? this.sortedFanpoints[pa].guid : this.sortedFanpoints[pb].guid,
+          guidA: swapped ? this.sortedFanpoints[pb].guid : this.sortedFanpoints[pa].guid,
+          guidB: swapped ? this.sortedFanpoints[pa].guid : this.sortedFanpoints[pb].guid,
           bearing: bearing,
           isJetLink: false,
           isFanLink: (pb === 0),
@@ -3609,21 +4174,13 @@ function wrapper(plugin_info) {
 
           if (possibleline.counts) {
             donelinks.splice(donelinks.length - (this.sortedFanpoints.length - pa), 0, possibleline);
-            if (pb === 0 && thisplugin.stardirection === thisplugin.starDirENUM.RADIATING && outbound === 1) {
+            if (swapped) {
+              // pb is the source (anchor throwing out via capacity/flip, or a flipped mesh link).
               this.sortedFanpoints[pb].outgoing.push(this.sortedFanpoints[pa]);
               this.sortedFanpoints[pa].incoming.push(this.sortedFanpoints[pb]);
 
               // Store per-link metadata (field creation) on the source portal.
               // This avoids recomputing geometry during task list export.
-              this.sortedFanpoints[pb].outgoingMeta[this.sortedFanpoints[pa].guid] = {
-                creatingFieldsWith: possibleline.creatingFieldsWith
-              };
-
-            } else if (flipped) {
-              // ghi#23 (link flip): pb is now the source, pa the destination.
-              this.sortedFanpoints[pb].outgoing.push(this.sortedFanpoints[pa]);
-              this.sortedFanpoints[pa].incoming.push(this.sortedFanpoints[pb]);
-
               this.sortedFanpoints[pb].outgoingMeta[this.sortedFanpoints[pa].guid] = {
                 creatingFieldsWith: possibleline.creatingFieldsWith
               };
@@ -3667,12 +4224,39 @@ function wrapper(plugin_info) {
     // Issue #96: validate plan against under-field link distance constraints
     thisplugin.validateUnderFieldLinks();
 
+    // Link order optimization (menu button): recompute once when something invalidated it
+    // (anchor/order/geometry change) — never on every recalculation, so manual tweaks made
+    // on top via the Task List ↔ button are left alone otherwise.
+    if (thisplugin._linkOrderRecomputePending && thisplugin.linkOrderMode !== thisplugin.linkOrderModeENUM.ALGO) {
+      thisplugin._linkOrderRecomputePending = false;
+
+      // The Task List's "Grey out done links" option calls isLinkInGame() per link purely for
+      // display — irrelevant, and needlessly expensive, while the optimizer itself computes.
+      // Suspend it for the duration of the computation and restore it exactly as it was
+      // straight after — never via toggleGreyOutExistingLinks() (redundant here), and before
+      // the updateLayer() call below, so the final render/Task List refresh sees the real
+      // value. _linkOrderRecomputePending is already false, so that call can't loop back here.
+      var greyOutWasOn = thisplugin.greyOutExistingLinks;
+      thisplugin.greyOutExistingLinks = false;
+
+      thisplugin.manualLinkFlips = (thisplugin.linkOrderMode === thisplugin.linkOrderModeENUM.KEYS)
+        ? thisplugin.computeKeysOrderFlips()
+        : thisplugin.computeDistanceOrderFlips();
+
+      thisplugin.greyOutExistingLinks = greyOutWasOn;
+
+      thisplugin.updateLayer();
+      return;
+    }
+
     // remove any not wanted
     thisplugin.clearAllPortalLabels();
 
     // and add those we do
     var startLabelDrawn = false;
-    $.each(this.sortedFanpoints, function (idx, fp) {
+    // On-map position numbers follow the walk order (relocations included), matching the
+    // Task List — never the algorithm's own build order.
+    $.each(thisplugin.getDisplayOrder(), function (idx, fp) {
       if (thisplugin.startingpoint !== undefined && fp.point.equals(thisplugin.startingpoint)) {
         drawStartLabel(fp);
         startLabelDrawn = true;
@@ -3901,6 +4485,11 @@ function wrapper(plugin_info) {
     var buttonGreyOutExistingLinks =
       '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_greyout_existing_btn" onclick="window.plugin.fanfields.toggleGreyOutExistingLinks();" title="Grey out and strike through Task List links (and portals) that already exist in-game for your faction">Grey&nbsp;out&nbsp;done&nbsp;links:&nbsp;ON</a> ';
 
+    // Link order optimization: leaves the algorithm itself untouched and only reorients mesh
+    // links, either for fewer keys on any single portal or for less backtracking while walking.
+    var buttonLinkOrder =
+      '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_linkorder_btn" onclick="window.plugin.fanfields.cycleLinkOrderMode();" title="Reorient mesh links (not the algorithm itself): fewer keys on any one portal, or less backtracking while walking">Optim:&nbsp;Less&nbsp;walking</a> ';
+
     // Shift anchor
     var buttonShiftAnchor =
       '<a class="plugin_fanfields2_btn" onclick="window.plugin.fanfields.previousStartingPoint();" title="Less Chaos More Stability">Shift&nbsp;left&nbsp;' +
@@ -3936,6 +4525,7 @@ function wrapper(plugin_info) {
       buttonBookmarksOnly +
       buttonLinkDirectionIndicator +
       buttonGreyOutExistingLinks +
+      buttonLinkOrder +
       buttonPortalList +
       buttonManageOrder +
       buttonDrawTools +
@@ -3978,6 +4568,7 @@ function wrapper(plugin_info) {
 
     thisplugin.updateRespectIntelButton();
     thisplugin.updateGreyOutExistingLinksButton();
+    thisplugin.updateLinkOrderModeButton();
 
     //         window.pluginCreateHook('pluginBkmrksEdit');
 
