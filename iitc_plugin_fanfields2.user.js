@@ -3190,6 +3190,18 @@ function wrapper(plugin_info) {
 
     var flips = thisplugin.flipsFromDirections(current, naturalByKey);
 
+    // Every portal that throws a link AT a given guid, in the final (post-flip) direction —
+    // not just its flipped mesh link: a relocated portal can also receive an ordinary,
+    // never-touched incoming link from some unrelated portal (e.g. two different portals both
+    // happen to link to the same fan point), and whoever throws needs it already captured
+    // either way. computeDistanceOrderReordering uses this as a hard "must come before" bound
+    // — capturing it, and farming enough of its own keys, is only possible once it's actually
+    // been visited, so it can never be walked to AFTER something that throws to it.
+    var incomingSourcesByGuid = {};
+    current.forEach(function (e) {
+      (incomingSourcesByGuid[e.dstGuid] = incomingSourcesByGuid[e.dstGuid] || []).push(e.srcGuid);
+    });
+
     // Relocate each flipped portal to wherever in the walk adds the least extra distance —
     // not necessarily next to its mesh partner, which was picked by the base algorithm for
     // field-geometry reasons and can sit far away geographically. Its anchor link is left
@@ -3197,7 +3209,7 @@ function wrapper(plugin_info) {
     // ever writes to thisplugin.displayOrderGuids (a pure display/walk order), never to
     // thisplugin.sortedFanpoints or thisplugin.manualOrderGuids (the Manage Portal Order
     // feature's own, unrelated, BUILD-order override) — see thisplugin.getDisplayOrder().
-    var reorderResult = thisplugin.computeDistanceOrderReordering(meshFlippedGuids);
+    var reorderResult = thisplugin.computeDistanceOrderReordering(meshFlippedGuids, incomingSourcesByGuid);
     if (reorderResult) {
       thisplugin.displayOrderGuids = reorderResult.order;
       thisplugin.relocatedForLessWalkingGuids = reorderResult.movedGuids;
@@ -3215,14 +3227,19 @@ function wrapper(plugin_info) {
   // that partner was chosen by the base algorithm for field-geometry reasons and can easily
   // sit far away, while the portal itself may in fact be geographically embedded among
   // completely different, unrelated portals — that's exactly where it belongs when walking.
-  // Every gap between two consecutive portals in the walk is a candidate (plus appending after
-  // the last one); the gap whose two endpoints are least stretched by detouring through this
-  // portal wins. Relocated portals are processed one at a time, in thisplugin.sortedFanpoints
-  // order, and each insertion updates the walk before the next portal is placed — so a portal
-  // relocated earlier in this same pass can itself become part of a later portal's cheapest
-  // gap (e.g. two portals that belong together end up next to each other), but the search
-  // itself is otherwise global: nothing pins a portal to its own partner. This is purely a
-  // DISPLAY/WALK reorder: the returned order is only ever meant for
+  // Every gap between two consecutive portals in the walk is a candidate — EXCEPT any gap at
+  // or past the earliest portal in incomingSourcesByGuid[guid] (whoever throws a link at this
+  // one, be it the flipped mesh link or an ordinary link the base algorithm never touched):
+  // that source needs this portal already captured, with enough of its own keys farmed, so it
+  // can never land later in the walk than every one of its sources — it must be visited in
+  // time, not just cheaply. Among the remaining, earlier gaps (plus appending after the last
+  // stop, when nothing constrains it at all), the one whose two endpoints are least stretched
+  // by detouring through this portal wins. Relocated portals are processed one at a time, in
+  // thisplugin.sortedFanpoints order, and each insertion updates the walk before the next
+  // portal is placed — so a portal relocated earlier in this same pass can itself become part
+  // of a later portal's cheapest gap (e.g. two portals that belong together end up next to
+  // each other) and can itself act as a "source" bound for one relocated later. This is purely
+  // a DISPLAY/WALK reorder: the returned order is only ever meant for
   // thisplugin.displayOrderGuids, and must never be applied to thisplugin.sortedFanpoints or
   // thisplugin.manualOrderGuids — the core algorithm only considers, for each portal, the
   // portals preceding it in sortedFanpoints as link partners, so reordering that array (rather
@@ -3230,7 +3247,7 @@ function wrapper(plugin_info) {
   // algorithm produces, not just their direction.
   // Returns null if nothing moved, or { order: <full guid order, anchor first>, movedGuids:
   // <guid -> true, only for portals actually relocated> }.
-  thisplugin.computeDistanceOrderReordering = function (relocateGuids) {
+  thisplugin.computeDistanceOrderReordering = function (relocateGuids, incomingSourcesByGuid) {
     var sorted = thisplugin.sortedFanpoints || [];
     if (!sorted.length) return null;
 
@@ -3252,21 +3269,39 @@ function wrapper(plugin_info) {
     sorted.forEach(function (fp) {
       if (!relocateGuids[fp.guid]) return;
 
-      // Try every gap in the walk so far (between order[i] and order[i+1]), plus appending
-      // after the last stop, and keep whichever adds the least distance.
+      // How far into the walk this portal is allowed to land: strictly before the earliest
+      // of its known sources (skip a source not yet placed — can't bound against a position
+      // that doesn't exist yet). No known source at all means no bound: `limit` stays at
+      // order.length, so appending at the very end is fair game too.
+      var limit = order.length;
+      (incomingSourcesByGuid[fp.guid] || []).forEach(function (srcGuid) {
+        var srcIdx = order.indexOf(srcGuid);
+        if (srcIdx !== -1 && srcIdx < limit) limit = srcIdx;
+      });
+
+      // Try every gap in the walk so far (between order[i] and order[i+1]) that still ends
+      // before `limit`, plus appending after the last stop when nothing bounds it at all —
+      // and keep whichever adds the least distance.
       var bestIdx = -1;
       var bestCost = Infinity;
 
-      for (var i = 0; i < order.length - 1; i++) {
+      var maxGapStart = Math.min(order.length - 2, limit - 2);
+      for (var i = 0; i <= maxGapStart; i++) {
         var a = order[i], b = order[i + 1];
         var cost = dist(a, fp.guid) + dist(fp.guid, b) - dist(a, b);
         if (cost < bestCost) { bestCost = cost; bestIdx = i; }
       }
 
-      var lastCost = dist(order[order.length - 1], fp.guid);
-      if (lastCost < bestCost) { bestCost = lastCost; bestIdx = order.length - 1; }
+      if (limit >= order.length) {
+        var lastCost = dist(order[order.length - 1], fp.guid);
+        if (lastCost < bestCost) { bestCost = lastCost; bestIdx = order.length - 1; }
+      } else if (bestIdx === -1 && limit >= 1) {
+        // No interior gap qualified (the earliest source sits right after the anchor) — the
+        // only spot left that still comes before it is right after the anchor itself.
+        bestIdx = 0;
+      }
 
-      if (bestIdx === -1) return; // empty order (shouldn't normally happen), skip
+      if (bestIdx === -1) return; // no valid spot at all (shouldn't normally happen), skip
 
       order.splice(bestIdx + 1, 0, fp.guid);
       movedGuids[fp.guid] = true;
