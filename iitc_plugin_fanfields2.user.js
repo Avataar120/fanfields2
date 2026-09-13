@@ -39,6 +39,7 @@ function wrapper(plugin_info) {
         'FIX: Task List\'s Links column now shows how many outgoing links are still left to throw from a portal, instead of its total outgoing link count.',
         'NEW: Already-thrown links now show as a faded brownish-red on the map itself, not just in the Task List — only links still left to throw stay bright red. Toggle via the same "Grey out done links" button.',
         'FIX: Task List link details no longer look bold for a still-to-throw link — lighter, slightly smaller text than before.',
+        'NEW: Respect Intel now defaults to your own faction (ENL or RES) instead of NONE.',
       ],
     },{
       version: '2.8.10',
@@ -1897,6 +1898,8 @@ function wrapper(plugin_info) {
   // ALL: treat all visible links as blockers (RES+ENL+MAC)
   // ENL/RES/MAC: only that faction blocks
   // ENL_AND_MAC / RES_AND_MAC: block those teams
+  // Placeholder default, overwritten in setup() once window.PLAYER is reliably available:
+  // the real default is the player's own faction (ENL or RES), not NONE.
   thisplugin.respectIntelLinksMode = thisplugin.respectIntelLinksModeENUM.NONE;
 
   thisplugin.isRespectingIntel = function () {
@@ -4789,6 +4792,18 @@ function wrapper(plugin_info) {
 
     $('#fanfields2')
       .append(fanfields_buttons);
+
+    // Default Respect Intel to the player's own faction (ENL/RES) rather than NONE, so a
+    // fresh session starts out avoiding crossing (and re-throwing) the agent's own
+    // already-built links without having to click the button first. Done here in setup()
+    // rather than at the top-level default above, since window.PLAYER isn't reliably set
+    // yet when this script's own top-level code first runs (see thisplugin.getOwnFactionTeam).
+    var ownTeamForDefault = thisplugin.getOwnFactionTeam();
+    if (ownTeamForDefault === window.TEAM_ENL) {
+      thisplugin.respectIntelLinksMode = thisplugin.respectIntelLinksModeENUM.ENL;
+    } else if (ownTeamForDefault === window.TEAM_RES) {
+      thisplugin.respectIntelLinksMode = thisplugin.respectIntelLinksModeENUM.RES;
+    }
 
     thisplugin.updateRespectIntelButton();
     thisplugin.updateGreyOutExistingLinksButton();
