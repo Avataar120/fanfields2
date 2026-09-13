@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.9.20260913
+// @version         2.8.10.20260913
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-13-180000';
+  plugin_info.dateTimeVersion = '2026-09-13-190000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,12 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.10',
+      changes: [
+        'NEW: Added a Task List button to the map\'s top-left corner, next to the anchor rotation buttons, so the list can be opened directly from there.',
+        'NEW: Added the anchor rotation buttons to the Task List window itself, next to the OK button, so the start portal can be changed without closing the list.',
+      ],
+    },{
       version: '2.8.9',
       changes: [
         'NEW: Task List\'s Action column now shows Capture, Link, Keys or Nothing for each portal, based on what actually still needs doing there (not owned or under 8 resonators, outgoing links left, incoming links or keys still needed, or fully done).',
