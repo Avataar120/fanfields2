@@ -38,6 +38,7 @@ function wrapper(plugin_info) {
         'NEW: Added a Task List button to the map\'s top-left corner, next to the anchor rotation buttons, so the list can be opened directly from there.',
         'NEW: Added the anchor rotation buttons to the Task List window itself, next to the OK button, so the start portal can be changed without closing the list.',
         'NEW: Added a Refresh button next to those anchor rotation buttons in the Task List, to force an IITC map data refresh without closing the list.',
+        'FIX: An open Task List no longer stays stuck showing an already-thrown link as still outstanding — its own 10-second refresh now also re-reads the current in-game data itself, instead of relying only on IITC data events that don\'t always reach the plugin (seen on mobile).',
       ],
     },{
       version: '2.8.9',
@@ -4904,11 +4905,19 @@ function wrapper(plugin_info) {
       thisplugin.forceMapDataRefresh();
     });
 
-    // Keep an open Task List visually current between plan recalculations — available key
-    // counts (LiveInventory/Keys plugin) and in-game link/portal completion can change on
-    // their own timeline, not just when this plugin recomputes the plan.
+    // Keep an open Task List current between plan recalculations — available key counts
+    // (LiveInventory/Keys plugin) and in-game link/portal completion can change on their own
+    // timeline, not just when this plugin recomputes the plan. Refreshes live game data
+    // (thisplugin.locations/intelLinks) itself first, rather than only repainting from
+    // whatever a mapDataRefreshEnd/requestFinished hook last put there: on some platforms
+    // (observed on IITC Mobile) IITC's own map updates without those hooks ever firing for
+    // this plugin, which would otherwise leave the Task List showing a stale, already-thrown
+    // link as still outstanding indefinitely.
     setInterval(function () {
-      thisplugin.refreshTaskListIfOpen();
+      if (thisplugin.isTaskListDialogOpen()) {
+        thisplugin.refreshLiveGameData();
+        thisplugin.refreshTaskListDialog();
+      }
     }, 10000);
 
     window.addLayerGroup('Fanfields links', thisplugin.linksLayerGroup, false);
