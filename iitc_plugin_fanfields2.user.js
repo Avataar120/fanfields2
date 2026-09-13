@@ -37,6 +37,7 @@ function wrapper(plugin_info) {
       changes: [
         'NEW: Added a Task List button to the map\'s top-left corner, next to the anchor rotation buttons, so the list can be opened directly from there.',
         'NEW: Added the anchor rotation buttons to the Task List window itself, next to the OK button, so the start portal can be changed without closing the list.',
+        'NEW: Added a Refresh button next to those anchor rotation buttons in the Task List, to force an IITC map data refresh without closing the list.',
       ],
     },{
       version: '2.8.9',
@@ -1421,9 +1422,10 @@ function wrapper(plugin_info) {
   };
 
   // Task List dialog: add the same anchor shift (rotation) controls as the map's own
-  // topleft control, to the left of the dialog's OK button, so the start portal can be
-  // cycled without leaving the Task List open. Only needs wiring once per dialog open —
-  // unlike the table itself, the button pane isn't touched by refreshTaskListDialog().
+  // topleft control, plus a Refresh button to force an IITC map data refresh, to the left
+  // of the dialog's OK button, so these don't require leaving the Task List open. Only
+  // needs wiring once per dialog open — unlike the table itself, the button pane isn't
+  // touched by refreshTaskListDialog().
   thisplugin.addTaskListShiftButtons = function () {
     var id = 'plugin_fanfields2_alert_textExport';
 
@@ -1443,7 +1445,8 @@ function wrapper(plugin_info) {
       '<button type="button" id="plugin_fanfields2_tasklist_shift_left" class="plugin_fanfields2_tasklist_shift_btn" title="FanFields shift left">' +
       symbol_counterclockwise + '</button>' +
       '<button type="button" id="plugin_fanfields2_tasklist_shift_right" class="plugin_fanfields2_tasklist_shift_btn" title="FanFields shift right">' +
-      symbol_clockwise + '</button>';
+      symbol_clockwise + '</button>' +
+      '<button type="button" id="plugin_fanfields2_tasklist_refresh" class="plugin_fanfields2_tasklist_shift_btn" title="Force an IITC map data refresh">Refresh</button>';
 
     var $buttonset = $buttonpane.find('.ui-dialog-buttonset');
     if ($buttonset.length) {
@@ -1461,6 +1464,11 @@ function wrapper(plugin_info) {
       .off('click')
       .on('click', function () {
         thisplugin.nextStartingPoint();
+      });
+    $buttonpane.find('#plugin_fanfields2_tasklist_refresh')
+      .off('click')
+      .on('click', function () {
+        thisplugin.forceMapDataRefresh();
       });
   };
 
