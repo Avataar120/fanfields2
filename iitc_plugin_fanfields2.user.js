@@ -2319,10 +2319,16 @@ function wrapper(plugin_info) {
       '  vertical-align: middle;\n' +
       '}\n');
 
-    //plugin_fanfields2_exportText_LinkDetails
+    // Task List: link detail rows use a slightly softened (not pure white) text color and
+    // never bold — a still-to-throw link reads at normal weight, only a touch dimmer and
+    // smaller than the portal row above it, with the italic already applied to this whole
+    // block setting it apart further. An already-thrown link is greyed and struck through
+    // separately (plugin_fanfields2_link_done).
     addCSS('\n' +
       '.plugin_fanfields2_exportText_LinkDetails tr td {\n' +
-      '  color: #828284;\n' +
+      '  font-weight: normal !important;\n' +
+      '  color: #CCCCCC;\n' +
+      '  font-size: 12px;\n' +
       '}\n');
 
     addCSS('\n' +
@@ -2415,8 +2421,9 @@ function wrapper(plugin_info) {
       '}\n'
     );
 
-    // Task List: a link line that already exists in-game stays grey (like the
-    // rest of the link details) but gets struck through, end to end.
+    // Task List: a link line that already exists in-game turns grey and gets struck
+    // through, end to end. A still-to-throw link keeps the normal text color (see the
+    // exportText_LinkDetails rule above).
     addCSS('\n' +
       'tr.plugin_fanfields2_link_done,\n' +
       'tr.plugin_fanfields2_link_done td,\n' +
