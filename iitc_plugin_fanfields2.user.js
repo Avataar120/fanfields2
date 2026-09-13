@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.6.20260912
+// @version         2.8.8.20260913
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-12-210000';
+  plugin_info.dateTimeVersion = '2026-09-13-150000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,17 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.8',
+      changes: [
+        'NEW: Coming back to IITC after it was in the background (app switch, screen lock) now triggers a data refresh right away, instead of waiting for IITC\'s own refresh timer or needing to pan/zoom the map manually.',
+        'NEW: An open Task List now also refreshes itself every 10 seconds on its own, so available key counts and in-game link/portal completion stay current even between plan recalculations.',
+      ],
+    },{
+      version: '2.8.7',
+      changes: [
+        'FIX: Clicking a portal in the Task List threw an error on desktop (window.map.flyTo is not a function).',
+      ],
+    },{
       version: '2.8.6',
       changes: [
         'NEW: "Link order" menu button lets you choose how links are oriented, without changing the fanfield plan itself: keep the algorithm\'s own choice, optimize for fewer keys on any single portal, or optimize for less backtracking while walking the plan.',
@@ -41,6 +52,7 @@ function wrapper(plugin_info) {
       version: '2.8.5',
       changes: [
         'NEW: Task List strikes through a link line already made in-game for your faction (grey), and once all of a portal\'s links exist, fades and strikes through that whole portal line too (yellow). Toggle via the "Grey out done links" button.',
+        'NEW: Task List no longer counts a key toward a portal\'s "Keys needed" once the link it was meant for already exists in-game.',
         'NEW: Task List now refreshes itself live as the background plan changes (new links appearing in-game, fan field rotation, anchor changes, ...) — no need to close and reopen it.',
       ],
     },{
@@ -516,8 +528,7 @@ function wrapper(plugin_info) {
   // Manual per-link direction overrides (Task List "flip" button, and the "Fewer keys"
   // optimizer below).
   // Keyed by undirected link key (getUndirectedLinkKey) -> true.
-  // The Task List's own ↔ button only ever touches mesh links between fan points — the
-  // anchor's own fan/star links can't be flipped that way.
+  // Applies to mesh links between fan points as well as a portal's own anchor (fan/star) link.
   thisplugin.manualLinkFlips = {};
 
   // "Less walking" (DISTANCE mode): portals it relocated earlier in the walk, right next to
@@ -871,7 +882,13 @@ function wrapper(plugin_info) {
 
   thisplugin.flyToPortal = function (latlng, guid) {
 
-    window.map.flyTo(latlng, map.getZoom());
+    // Compat: window.map.flyTo is not available on all IITC builds (desktop). Fall back to
+    // a plain setView, which every build supports.
+    if (typeof window.map.flyTo === 'function') {
+      window.map.flyTo(latlng, map.getZoom());
+    } else {
+      window.map.setView(latlng, map.getZoom());
+    }
     if (window.portals[guid]) window.renderPortalDetails(guid);
     else window.urlPortal = guid;
   }
@@ -1011,7 +1028,20 @@ function wrapper(plugin_info) {
           return thisplugin.isLinkInGame(portal.guid, outPortal.guid);
         });
 
-      var keysNeeded = (portal.incomingValidCount !== undefined) ? portal.incomingValidCount : portal.incoming.length;
+      // Incoming links that already exist in-game don't need a key anymore: that key was
+      // already spent to make the link. Subtract them from the portal's remaining key count.
+      var alreadyLinkedIncomingCount = 0;
+      if (thisplugin.greyOutExistingLinks && portal.incoming && portal.incoming.length > 0) {
+        portal.incoming.forEach(function (srcPortal) {
+          var srcMeta = srcPortal.outgoingMeta && srcPortal.outgoingMeta[portal.guid];
+          var isInvalid = srcMeta && srcMeta.invalidUnderField;
+          if (!isInvalid && thisplugin.isLinkInGame(srcPortal.guid, portal.guid)) {
+            alreadyLinkedIncomingCount++;
+          }
+        });
+      }
+
+      var keysNeeded = ((portal.incomingValidCount !== undefined) ? portal.incomingValidCount : portal.incoming.length) - alreadyLinkedIncomingCount;
 
       let availableKeysText = '';
       let availableKeys = 0;
@@ -1132,11 +1162,10 @@ function wrapper(plugin_info) {
           }
           linkDetailText += '</td>';
 
-          // ghi#23 (link flip): swap this link's direction, in its own compact column. Anchor links are excluded (star/fan logic),
-          // as is a link already done in-game (nothing left to flip).
-          var isAnchorLink = (portal.guid === thisplugin.startingpointGUID) || (outPortal.guid === thisplugin.startingpointGUID);
+          // ghi#23 (link flip): swap this link's direction, in its own compact column. Excluded only
+          // for a link already done in-game (nothing left to flip) — anchor (fan/star) links are flippable too.
           linkDetailText += '<td>';
-          if (!isAnchorLink && !linkDone) {
+          if (!linkDone) {
             var isFlipped = thisplugin.isLinkFlipped(portal.guid, outPortal.guid);
             linkDetailText += '<button class="plugin_fanfields2_link_flip_btn' + (isFlipped ? ' plugin_fanfields2_link_flipped' : '') +
               '" data-guid-a="' + portal.guid + '" data-guid-b="' + outPortal.guid + '" title="' +
@@ -1857,6 +1886,7 @@ function wrapper(plugin_info) {
   thisplugin.toggleGreyOutExistingLinks = function () {
     thisplugin.greyOutExistingLinks = !thisplugin.greyOutExistingLinks;
     thisplugin.updateGreyOutExistingLinksButton();
+    thisplugin.refreshTaskListIfOpen();
   };
   thisplugin.updateGreyOutExistingLinksButton = function () {
     $('#plugin_fanfields2_greyout_existing_btn')
@@ -2681,11 +2711,11 @@ function wrapper(plugin_info) {
     return !!thisplugin.manualLinkFlips[thisplugin.getUndirectedLinkKey(guidA, guidB)];
   };
 
-  // Toggle the manual direction override for a mesh link (Task List "flip" button).
-  // Anchor links (fan/star links to the starting portal) are never flippable this way.
+  // Toggle the manual direction override for a link (Task List "flip" button). Works for both
+  // mesh links and a portal's own anchor (fan/star) link — for the latter, updateLayer() applies
+  // the override subject to the same SBUL outgoing-capacity check as radiating mode.
   thisplugin.toggleLinkFlip = function (guidA, guidB) {
     if (!guidA || !guidB) return;
-    if (guidA === thisplugin.startingpointGUID || guidB === thisplugin.startingpointGUID) return;
 
     var key = thisplugin.getUndirectedLinkKey(guidA, guidB);
     if (thisplugin.manualLinkFlips[key]) {
@@ -4053,10 +4083,9 @@ function wrapper(plugin_info) {
         bearing = this.getBearing(a, b);
         const distance = thisplugin.distanceTo(a, b);
 
-        // ghi#23 (link flip): manual direction override. Almost always a mesh link; a portal's
-        // own anchor link (pb === 0) can technically be flipped too, handled below via the same
-        // SBUL capacity check as radiating mode, though no automatic optimizer currently
-        // produces such a flip.
+        // ghi#23 (link flip): manual direction override, for a mesh link or a portal's own anchor
+        // link (pb === 0) alike — the anchor case is handled below via the same SBUL capacity
+        // check as radiating mode.
         var flipped = thisplugin.isLinkFlipped(this.sortedFanpoints[pa].guid, this.sortedFanpoints[pb].guid);
 
         if (pb === 0) {
@@ -4353,6 +4382,43 @@ function wrapper(plugin_info) {
 
   };
 
+  // IITC's own portal/link data refresh (the countdown shown in the status bar) runs on a
+  // JS timer, which mobile browsers/PWAs throttle or fully suspend while the app is in the
+  // background (screen locked, app switched away from) — so the plan and Task List can go
+  // stale until something nudges IITC into refreshing. Panning/zooming doesn't actually do
+  // that by itself (moveend only fetches newly-visible tiles; it's zooming's tile-grid change
+  // that happens to force new ones) — IITC's real refresh is time-based and additionally
+  // skipped while it considers the user idle. So this calls IITC's own refresh entry points
+  // directly: window.idleReset() (otherwise the idle check would just skip the request) and
+  // window.mapDataRequest.start() (the actual server refetch), clearing its request cache
+  // first so it can't just resolve from what's already cached. Called as soon as the page is
+  // visible/focused again — see the visibilitychange/focus listeners in setup(). The
+  // resulting data refresh, once IITC completes it, reaches this plugin via the existing
+  // 'mapDataRefreshEnd'/'requestFinished' hooks below, which recompute the plan and refresh
+  // an open Task List as usual.
+  thisplugin.forceMapDataRefresh = function () {
+    if (!window.map) return;
+
+    // visibilitychange and focus commonly fire together on mobile browsers; collapse anything
+    // within 1s of the previous call into a single actual refresh.
+    var now = Date.now();
+    if (thisplugin._lastForceRefreshAt && (now - thisplugin._lastForceRefreshAt) < 1000) return;
+    thisplugin._lastForceRefreshAt = now;
+
+    window.map.invalidateSize();
+
+    if (typeof window.idleReset === 'function') window.idleReset();
+
+    if (window.mapDataRequest) {
+      if (window.mapDataRequest.cache && window.mapDataRequest.cache._cache) {
+        window.mapDataRequest.cache._cache = {};
+      }
+      if (typeof window.mapDataRequest.start === 'function') {
+        window.mapDataRequest.start();
+      }
+    }
+  };
+
   var symbol_clockwise = '&#8635;';
   var symbol_counterclockwise = '&#8634;';
   var symbol_clipboard = '&#128203;';
@@ -4605,6 +4671,26 @@ function wrapper(plugin_info) {
         thisplugin.updateOrderPath();
       }
     });
+
+    // Force a real IITC data refresh as soon as the page is visible/focused again, so coming
+    // back from the background (app switch, screen lock) doesn't require manually panning or
+    // zooming first. visibilitychange is the standard signal for this; focus is also bound
+    // since some mobile browsers/PWAs fire that instead of (or without) visibilitychange.
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') {
+        thisplugin.forceMapDataRefresh();
+      }
+    });
+    window.addEventListener('focus', function () {
+      thisplugin.forceMapDataRefresh();
+    });
+
+    // Keep an open Task List visually current between plan recalculations — available key
+    // counts (LiveInventory/Keys plugin) and in-game link/portal completion can change on
+    // their own timeline, not just when this plugin recomputes the plan.
+    setInterval(function () {
+      thisplugin.refreshTaskListIfOpen();
+    }, 10000);
 
     window.addLayerGroup('Fanfields links', thisplugin.linksLayerGroup, false);
     window.addLayerGroup('Fanfields fields', thisplugin.fieldsLayerGroup, false);
