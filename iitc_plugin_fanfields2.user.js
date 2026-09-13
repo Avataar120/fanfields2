@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.10.20260913
+// @version         2.8.11.20260913
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-13-190000';
+  plugin_info.dateTimeVersion = '2026-09-13-200000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,18 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.11',
+      changes: [
+        'FIX: Respect Intel now only blocks crossing the selected factions\' links, even when your own faction is included — it no longer changes anything else about how already-existing links are handled or displayed.',
+        'FIX: Task List\'s Links column now shows how many outgoing links are still left to throw from a portal, instead of its total outgoing link count.',
+        'NEW: Already-thrown links now show as a faded brownish-red on the map itself, not just in the Task List — only links still left to throw stay bright red. Toggle via the same "Grey out done links" button.',
+        'FIX: Task List link details no longer look bold for a still-to-throw link — lighter, slightly smaller text than before.',
+        'NEW: Respect Intel now defaults to your own faction (ENL or RES) instead of NONE.',
+        'FIX: Task List\'s Refresh/shift/OK buttons were unreachable on mobile once the list had enough portals to grow taller than the screen — the list now caps its height to the visible screen and scrolls its own content instead.',
+        'NEW: After a new (or edited) polygon replaces the previous one, the plan now automatically searches for whichever starting portal and direction reuses the most links already thrown in-game for your faction, instead of keeping an arbitrary orientation. Skipped while Locked or when a manual portal order is active.',
+        'FIX: Task List\'s "Navigate with Google Maps" route no longer includes a portal with nothing left to do there.',
+      ],
+    },{
       version: '2.8.10',
       changes: [
         'NEW: Added a Task List button to the map\'s top-left corner, next to the anchor rotation buttons, so the list can be opened directly from there.',
@@ -595,6 +607,15 @@ function wrapper(plugin_info) {
   // Starts true so the default DISTANCE mode computes as soon as the very first plan exists.
   thisplugin._linkOrderRecomputePending = true;
 
+  // Set whenever the portal set itself just changed (a new/edited polygon replaced the
+  // previous one — see the lastPlanSignature check in updateLayer()), so the next
+  // updateLayer() run searches for whichever anchor/direction reuses the most links already
+  // thrown in-game for our own faction, instead of keeping whatever anchor/direction happened
+  // to be selected before. Never set for anything else (order changes, zoom, link flips, ...)
+  // — this search tries every hull anchor in both directions, so it's deliberately reserved
+  // for an actual new polygon rather than every recalculation.
+  thisplugin._orientationSearchPending = false;
+
   // The walk/display order: thisplugin.sortedFanpoints reordered per thisplugin.displayOrderGuids
   // (the "Less walking" relocation — see above), or thisplugin.sortedFanpoints itself unchanged
   // if there's no active relocation, or if displayOrderGuids no longer matches the current plan
@@ -775,8 +796,7 @@ function wrapper(plugin_info) {
         '<p><b>Avoid blockers</b><br>' +
         'If you need to plan around links you cannot or do not want to destroy, use <i>Respect&nbsp;Intel</i>. ' +
         'Choose which factions\' links are treated as blockers (NONE / ALL / ENL / RES / ENL &amp; MAC / RES &amp; MAC / MAC). ' +
-        'The plan avoids crossing those currently visible intel links. When the selected mode includes your own faction, existing visible links from your own faction, ' +
-        'with both portals inside the selected area, are integrated as already-built links for field planning.</p>' +
+        'The plan avoids crossing those currently visible intel links — nothing else changes, even when the selected mode includes your own faction.</p>' +
 
         '<p><b>Order & route planning</b><br>' +
         'Switch between <i>Clockwise</i> and <i>Counterclockwise</i> order to find an easier route or squeeze out extra fields. ' +
@@ -1011,7 +1031,7 @@ function wrapper(plugin_info) {
     } else {
       text += '<th>Keys</th>';
     }
-    text += '<th>Links</th>';
+    text += '<th title="still to throw">Links</th>';
     text += '<th>Fields</th>';
 
     text += '</tr></thead><tbody>';
@@ -1027,7 +1047,6 @@ function wrapper(plugin_info) {
       var latlng = map.unproject(portal.point, thisplugin.PROJECT_ZOOM);
       lat = Math.round(latlng.lat * 10000000) / 10000000
       lng = Math.round(latlng.lng * 10000000) / 10000000
-      gmnav += `${lat},${lng}/`;
       p = portal.portal;
       // window.portals[portal.guid];
 
@@ -1113,6 +1132,12 @@ function wrapper(plugin_info) {
       var needsKeys = keysNeeded > 0 || (hasKeysPluginData && !hasEnoughKeys);
       var action = needsCapture ? 'Capture' : (remainingOutgoingCount > 0 ? 'Link' : (needsKeys ? 'Keys' : 'Nothing'));
 
+      // Google Maps route: skip a portal with nothing left to do here — no point stopping
+      // there again, and it only lengthens the route for everyone else on it.
+      if (action !== 'Nothing') {
+        gmnav += `${lat},${lng}/`;
+      }
+
       // A cell whose own number is already settled fades and strikes through on its own,
       // independently of what the portal's overall Action says.
       var linksCellDone = remainingOutgoingCount === 0;
@@ -1171,8 +1196,13 @@ function wrapper(plugin_info) {
       text += '<td' + (keyColorAttribute ? ' ' + keyColorAttribute : '') +
         (keysCellDone ? ' class="plugin_fanfields2_cell_done"' : '') + '>' +
         (hasKeysPluginData ? availableKeys + '/' : '') + keysNeeded + '</td>';
-      // Links
-      text += '<td' + (linksCellDone ? ' class="plugin_fanfields2_cell_done"' : '') + '>' + totalOutgoingCount + '</td>';
+      // Links: how many outgoing links are still left to throw from here, not the portal's
+      // total outgoing count — mirrors the Keys column, which already shows keys still needed
+      // rather than the total incoming count.
+      var linksTitle = (remainingOutgoingCount !== totalOutgoingCount)
+        ? ' title="' + remainingOutgoingCount + ' still to throw, out of ' + totalOutgoingCount + ' total"'
+        : '';
+      text += '<td' + linksTitle + (linksCellDone ? ' class="plugin_fanfields2_cell_done"' : '') + '>' + remainingOutgoingCount + '</td>';
 
       let fieldsCreatedAtThisPortal = 0
       if (portal.outgoing.length > 0) {
@@ -1417,6 +1447,14 @@ function wrapper(plugin_info) {
       width: width,
       closeOnEscape: true
     });
+
+    // Pinned to the top of the screen rather than jQuery UI's default vertical centering: as
+    // the dialog's height gets capped (see getMaxDialogHeight), centering would just push it
+    // further down instead of shrinking it upward, defeating the point of the cap on a short
+    // mobile screen.
+    $('#plugin_fanfields2_alert_textExport')
+      .dialog('option', 'position', { my: 'top', at: 'top+10', of: window });
+
     thisplugin.wireTaskListHandlers();
     thisplugin.addTaskListShiftButtons();
 
@@ -1438,6 +1476,26 @@ function wrapper(plugin_info) {
     var $ui = $dlg.closest('.ui-dialog');
     var $buttonpane = ($ui.length ? $ui : $dlg).find('.ui-dialog-buttonpane');
     if (!$buttonpane.length) return;
+
+    // On a tall Task List (many portals), the dialog can grow taller than the visible
+    // viewport, pushing this very button row (and the OK button) below the visible screen —
+    // unreachable, since jQuery UI's dialog has no built-in max height. Cap the dialog to the
+    // viewport and let only its content area scroll, so the title bar and this button row
+    // always stay in view. Reapplied every time this is called (each dialog open), since the
+    // viewport can differ between opens (e.g. after rotating the screen).
+    if ($ui.length) {
+      $ui.css({
+        'max-height': thisplugin.getMaxDialogHeight() + 'px',
+        'display': 'flex',
+        'flex-direction': 'column'
+      });
+      $ui.find('.ui-dialog-content')
+        .css({
+          'flex': '1 1 auto',
+          'overflow-y': 'auto'
+        });
+      $buttonpane.css('flex', '0 0 auto');
+    }
 
     // Already added (e.g. dialog reused rather than recreated)?
     if ($buttonpane.find('#plugin_fanfields2_tasklist_shift_left').length) return;
@@ -1885,6 +1943,8 @@ function wrapper(plugin_info) {
   // ALL: treat all visible links as blockers (RES+ENL+MAC)
   // ENL/RES/MAC: only that faction blocks
   // ENL_AND_MAC / RES_AND_MAC: block those teams
+  // Placeholder default, overwritten in setup() once window.PLAYER is reliably available:
+  // the real default is the player's own faction (ENL or RES), not NONE.
   thisplugin.respectIntelLinksMode = thisplugin.respectIntelLinksModeENUM.NONE;
 
   thisplugin.isRespectingIntel = function () {
@@ -1960,14 +2020,6 @@ function wrapper(plugin_info) {
     return window.TEAM_NONE;
   };
 
-  thisplugin.isOwnFactionRespected = function () {
-    var ownTeam = thisplugin.getOwnFactionTeam();
-    if (ownTeam === undefined) return false;
-
-    return thisplugin.getRespectIntelTeams()
-      .indexOf(ownTeam) !== -1;
-  };
-
   thisplugin.getRespectIntelLabel = function () {
     switch (thisplugin.respectIntelLinksMode) {
       case thisplugin.respectIntelLinksModeENUM.ALL:
@@ -2022,14 +2074,16 @@ function wrapper(plugin_info) {
     thisplugin.delayedUpdateLayer(0.2);
   };
 
-  // Task List: grey out / strike through links (and, once all of a portal's
-  // links exist, the portal name too) that already exist in-game for the
-  // player's own faction. Requested as a toggleable plugin option.
+  // Grey out / strike through links (and, once all of a portal's links exist, the portal
+  // name too) that already exist in-game for the player's own faction — in the Task List,
+  // and as a faded brownish-red on the map itself (thisplugin.updateLayer()'s own drawing
+  // loop) instead of bright red. Requested as a toggleable plugin option.
   thisplugin.greyOutExistingLinks = true;
   thisplugin.toggleGreyOutExistingLinks = function () {
     thisplugin.greyOutExistingLinks = !thisplugin.greyOutExistingLinks;
     thisplugin.updateGreyOutExistingLinksButton();
     thisplugin.refreshTaskListIfOpen();
+    thisplugin.updateLayer();
   };
   thisplugin.updateGreyOutExistingLinksButton = function () {
     $('#plugin_fanfields2_greyout_existing_btn')
@@ -2317,10 +2371,16 @@ function wrapper(plugin_info) {
       '  vertical-align: middle;\n' +
       '}\n');
 
-    //plugin_fanfields2_exportText_LinkDetails
+    // Task List: link detail rows use a slightly softened (not pure white) text color and
+    // never bold — a still-to-throw link reads at normal weight, only a touch dimmer and
+    // smaller than the portal row above it, with the italic already applied to this whole
+    // block setting it apart further. An already-thrown link is greyed and struck through
+    // separately (plugin_fanfields2_link_done).
     addCSS('\n' +
       '.plugin_fanfields2_exportText_LinkDetails tr td {\n' +
-      '  color: #828284;\n' +
+      '  font-weight: normal !important;\n' +
+      '  color: #CCCCCC;\n' +
+      '  font-size: 12px;\n' +
       '}\n');
 
     addCSS('\n' +
@@ -2413,8 +2473,9 @@ function wrapper(plugin_info) {
       '}\n'
     );
 
-    // Task List: a link line that already exists in-game stays grey (like the
-    // rest of the link details) but gets struck through, end to end.
+    // Task List: a link line that already exists in-game turns grey and gets struck
+    // through, end to end. A still-to-throw link keeps the normal text color (see the
+    // exportText_LinkDetails rule above).
     addCSS('\n' +
       'tr.plugin_fanfields2_link_done,\n' +
       'tr.plugin_fanfields2_link_done td,\n' +
@@ -2619,20 +2680,6 @@ function wrapper(plugin_info) {
     for (var k in neighA) {
       if (Object.prototype.hasOwnProperty.call(neighA, k) && neighB[k]) {
         result.push(neighA[k]);
-      }
-    }
-    return result;
-  };
-
-
-
-  thisplugin.linkExists = function (list, link) {
-    var i, result = false;
-    for (i in list) {
-      //if ((list[i].a === link.a && list[i].b === link.b) || (list[i].a === link.b && list[i].b === link.a))
-      if (thisplugin.linksEqual(list[i], link)) {
-        result = true;
-        break;
       }
     }
     return result;
@@ -2865,7 +2912,6 @@ function wrapper(plugin_info) {
   thisplugin.validTriangles = null;
   thisplugin.validLinkCount = 0;
   thisplugin.validTriangleCount = 0;
-  thisplugin.existingIntelPlanLinks = [];
 
   thisplugin.pointKey = function (p) {
     return p.x + ',' + p.y;
@@ -3028,15 +3074,6 @@ function wrapper(plugin_info) {
 
     // Track successful links (undirected) so we can decide which triangles can actually be formed.
     var builtLinks = {};
-    var existingIntelPlanLinks = thisplugin.existingIntelPlanLinks || [];
-    for (var ei = 0; ei < existingIntelPlanLinks.length; ei++) {
-      var existingLink = existingIntelPlanLinks[ei];
-      var existingGuidA = existingLink.guidA || pointToGuid[thisplugin.pointKey(existingLink.a)];
-      var existingGuidB = existingLink.guidB || pointToGuid[thisplugin.pointKey(existingLink.b)];
-      if (existingGuidA && existingGuidB) {
-        builtLinks[thisplugin.getUndirectedLinkKey(existingGuidA, existingGuidB)] = true;
-      }
-    }
 
     // Track whether a portal is under a field at the moment we arrive there.
     var portalUnderFieldAtVisit = {};
@@ -3265,9 +3302,6 @@ function wrapper(plugin_info) {
     });
 
     var builtLinks = {};
-    (thisplugin.existingIntelPlanLinks || []).forEach(function (link) {
-      if (link.guidA && link.guidB) builtLinks[thisplugin.getUndirectedLinkKey(link.guidA, link.guidB)] = true;
-    });
 
     var validTriangles = [];
     var invalidCount = 0;
@@ -3711,26 +3745,17 @@ function wrapper(plugin_info) {
   thisplugin.donelinks = [];
 
   thisplugin.updateLayer = function () {
-    var a, b, c;
-    var fanlinks = [],
-      donelinks = [],
-      maplinks = [];
+    var donelinks = [];
     var triangles = [];
     var n = 0;
-    // var directiontest;
     var centerOutgoings = 0;
     var centerSbul = 0;
-    var pa, i, pb, k, ll, p;
-    var guid;
-    var polygon, intersection;
-    // var starting_ll , fanpoint_ll ;
-    var fp_index, fp, bearing, sublinkCount;
+    var i;
     thisplugin.startingpoint = undefined;
     thisplugin.startingpointGUID = "";
     thisplugin.startingMarker = undefined;
     thisplugin.startingMarkerGUID = undefined;
     thisplugin.centerKeys = 0;
-    thisplugin.existingIntelPlanLinks = [];
 
 
 
@@ -3927,41 +3952,17 @@ function wrapper(plugin_info) {
       }
     }
 
-    // Store signature for the next run
-    thisplugin.lastPlanSignature = currentSignature;
-
-    thisplugin.existingIntelPlanLinks = [];
-    if (thisplugin.isOwnFactionRespected()) {
-      var ownTeam = thisplugin.getOwnFactionTeam();
-      var fanpointGuidByPoint = {};
-      for (guid in this.fanpoints) {
-        fanpointGuidByPoint[thisplugin.pointKey(this.fanpoints[guid])] = guid;
-      }
-
-      if (ownTeam !== undefined) {
-        thisplugin.existingIntelPlanLinks = Object.values(thisplugin.intelLinks)
-          .filter(function (link) {
-            var guidA = fanpointGuidByPoint[thisplugin.pointKey(link.a)];
-            var guidB = fanpointGuidByPoint[thisplugin.pointKey(link.b)];
-            return link.team === ownTeam && guidA && guidB;
-          })
-          .map(function (link) {
-            var guidA = fanpointGuidByPoint[thisplugin.pointKey(link.a)];
-            var guidB = fanpointGuidByPoint[thisplugin.pointKey(link.b)];
-            return {
-              a: link.a,
-              b: link.b,
-              team: link.team,
-              guidA: guidA,
-              guidB: guidB,
-              isExistingIntelLink: true,
-              counts: false
-            };
-          });
-      }
+    // A brand new portal set — including the very first one right after IITC/this plugin
+    // loads, when a polygon restored from DrawTools typically shows before all of its portals
+    // have actually finished loading in, so this keeps firing again as more of them stream in
+    // and the signature keeps changing on each subsequent run — should search for the best
+    // matching anchor/direction below, not just later, already-established plans.
+    if (thisplugin.lastPlanSignature !== currentSignature) {
+      thisplugin._orientationSearchPending = true;
     }
 
-
+    // Store signature for the next run
+    thisplugin.lastPlanSignature = currentSignature;
 
     // Find convex hull from fanpoints list of points
     // Returns array : [guid, [x,y],.....]
@@ -4059,23 +4060,36 @@ function wrapper(plugin_info) {
 
     console.log("startingpointIndex = " + thisplugin.startingpointIndex);
 
-    if (thisplugin.perimeterpoints.length !== 0) {
-      thisplugin.startingpointGUID = thisplugin.perimeterpoints[thisplugin.startingpointIndex][0];
-      thisplugin.startingpoint = this.fanpoints[thisplugin.startingpointGUID];
-      //console.log("Starting point : " + thisplugin.startingpointGUID);
-      //console.log("=> " + thisplugin.startingpoint);
+    // Builds a candidate plan for a given anchor (perimeter index) and direction, entirely in
+    // local state — never touching thisplugin.startingpointIndex/is_clockwise/sortedFanpoints/
+    // links/triangles/centerKeys, etc. This used to be a single inline block computed only
+    // once per run, for whatever anchor/direction was already selected; it's now a reusable,
+    // side-effect-free building block, so it can also be tried out repeatedly — for different
+    // candidate anchors/directions — by searchBestOrientation below, before committing to one.
+    function buildFanPlan(startIndex, clockwise) {
+      var localN = 0;
+      var localCenterOutgoings = 0;
+      var localCenterSbul = 0;
+      var localCenterKeys = 0;
+      var localFanlinks = [];
+      var localDonelinks = [];
+      var localTriangles = [];
+      var localSorted = [];
 
-      for (guid in this.fanpoints) {
-        n++;
-        if (this.fanpoints[guid].equals(thisplugin.startingpoint)) {
+      var candidateStartingpointGUID = thisplugin.perimeterpoints[startIndex][0];
+      var candidateStartingpoint = thisplugin.fanpoints[candidateStartingpointGUID];
 
+      var guid, a, b, fp, i;
+
+      for (guid in thisplugin.fanpoints) {
+        localN++;
+        if (thisplugin.fanpoints[guid].equals(candidateStartingpoint)) {
           continue;
         } else {
+          a = thisplugin.fanpoints[guid];
+          b = candidateStartingpoint;
 
-          a = this.fanpoints[guid];
-          b = thisplugin.startingpoint;
-
-          fanlinks.push({
+          localFanlinks.push({
             a: a,
             b: b,
             bearing: undefined,
@@ -4083,325 +4097,317 @@ function wrapper(plugin_info) {
             isFanLink: undefined,
             distance: thisplugin.distanceTo(a, b)
           });
-
-
-
-
         }
       }
 
-      for (guid in this.fanpoints) {
-        fp = this.fanpoints[guid];
-        this.sortedFanpoints.push({
+      for (guid in thisplugin.fanpoints) {
+        fp = thisplugin.fanpoints[guid];
+        localSorted.push({
           point: fp,
           portal: portals[guid],
-          bearing: this.getBearing(thisplugin.startingpoint, fp),
+          bearing: thisplugin.getBearing(candidateStartingpoint, fp),
           guid: guid,
           incoming: [],
           outgoing: [],
           outgoingMeta: {},
-          is_startpoint: this.fanpoints[guid].equals(thisplugin.startingpoint)
+          is_startpoint: thisplugin.fanpoints[guid].equals(candidateStartingpoint)
         });
-
       }
-      this.sortedFanpoints.sort(function (a, b) {
+      localSorted.sort(function (a, b) {
         return a.bearing - b.bearing;
       });
-    }
-    /*
-        // Apply manual order, if present
-        if (thisplugin.manualOrderGuids &&
-            thisplugin.manualOrderGuids.length === this.sortedFanpoints.length) {
 
-            let byGuid = {};
-            this.sortedFanpoints.forEach(function(fp) {
-                byGuid[fp.guid] = fp;
-            });
-
-            let newOrder = [];
-            let allPresent = true;
-
-            thisplugin.manualOrderGuids.forEach(function(guid) {
-                if (byGuid[guid]) {
-                    newOrder.push(byGuid[guid]);
-                } else {
-                    allPresent = false;
-                }
-            });
-
-            // Only apply if everything is consistent
-            if (allPresent &&
-                newOrder.length === this.sortedFanpoints.length &&
-                newOrder[0].guid === thisplugin.startingpointGUID) {
-                this.sortedFanpoints = newOrder;
-            }
-
+      // rotate localSorted until the bearing to the anchor has the longest gap to the previous
+      // one. if no gap bigger 90° is present, start with the longest link.
+      var currentBearing, lastBearing;
+      var gap, lastGap, maxGap, maxGapIndex, maxGapBearing;
+      for (i in localSorted) {
+        if (lastBearing === undefined) {
+          lastBearing = localSorted[localSorted.length - 1].bearing;
+          gap = 0;
+          lastGap = 0;
+          maxGap = 0;
+          maxGapIndex = 0;
+          maxGapBearing = 0;
         }
-        */
+        currentBearing = localSorted[i].bearing;
+        gap = lastBearing - currentBearing;
+        if (gap < 0) gap *= -1;
+        if (gap >= 180) gap = 360 - gap;
 
-    //console.log("rotating...");
-    // rotate the this.sortedFanpoints array until the bearing to the startingpoint has the longest gap to the previous one.
-    // if no gap bigger 90° is present, start with the longest link.
-    var currentBearing, lastBearing;
-    var gaps = [];
-    var gap, lastGap, maxGap, maxGapIndex, maxGapBearing;
-    for (i in this.sortedFanpoints) {
-      if (lastBearing === undefined) {
-        lastBearing = this.sortedFanpoints[this.sortedFanpoints.length - 1].bearing;
-        gap = 0;
-        lastGap = 0;
-        maxGap = 0;
-        maxGapIndex = 0;
-        maxGapBearing = 0;
-      }
-      currentBearing = this.sortedFanpoints[i].bearing;
-      gap = lastBearing - currentBearing;
-      if (gap < 0) gap *= -1;
-      if (gap >= 180) gap = 360 - gap;
-
-      if (gap > maxGap) {
-        maxGap = gap;
-        maxGapIndex = i;
-        maxGapBearing = currentBearing;
-      }
-      lastBearing = currentBearing;
-      lastGap = gap;
-    }
-
-    this.sortedFanpoints = this.sortedFanpoints.concat(this.sortedFanpoints.splice(1, maxGapIndex - 1));
-    if (!thisplugin.is_clockwise) {
-      // reverse all but the first element
-      this.sortedFanpoints = this.sortedFanpoints.concat(this.sortedFanpoints.splice(1, this.sortedFanpoints.length - 1)
-        .reverse());
-      //lines.sort(function(a, b){return b.bearing - a.bearing;});
-    }
-
-    // ghi#23
-    // ======= APPLY MANUAL ORDER (if present) =======
-    if (thisplugin.manualOrderGuids &&
-      thisplugin.manualOrderGuids.length === this.sortedFanpoints.length) {
-
-      let byGuid = {};
-      this.sortedFanpoints.forEach(function (fp) {
-        byGuid[fp.guid] = fp;
-      });
-
-      let newOrder = [];
-      let allPresent = true;
-
-      thisplugin.manualOrderGuids.forEach(function (guid) {
-        if (byGuid[guid]) {
-          newOrder.push(byGuid[guid]);
-        } else {
-          allPresent = false;
+        if (gap > maxGap) {
+          maxGap = gap;
+          maxGapIndex = i;
+          maxGapBearing = currentBearing;
         }
-      });
-
-      // Only if all GUIDs match and the anchor stays at position 0 do we accept the order
-      if (allPresent &&
-        newOrder.length === this.sortedFanpoints.length &&
-        newOrder[0].guid === thisplugin.startingpointGUID) {
-        this.sortedFanpoints = newOrder;
+        lastBearing = currentBearing;
+        lastGap = gap;
       }
-    }
-    // ======= END MANUAL ORDER =======
 
-    donelinks = [];
-    var outbound = 0;
-    var possibleline;
+      localSorted = localSorted.concat(localSorted.splice(1, maxGapIndex - 1));
+      if (!clockwise) {
+        // reverse all but the first element
+        localSorted = localSorted.concat(localSorted.splice(1, localSorted.length - 1)
+          .reverse());
+      }
 
-    for (pa = 0; pa < this.sortedFanpoints.length; pa++) {
-      bearing = this.sortedFanpoints[pa].bearing;
-      //console.log("FANPOINTS: " + pa + " to 0 bearing: "+ bearing + " " + this.bearingWord(bearing));
-      sublinkCount = 0;
+      // ghi#23: Manage Portal Order's manual order, applied on top of whichever anchor/
+      // direction produced this base order — orthogonal to the search below.
+      if (thisplugin.manualOrderGuids &&
+        thisplugin.manualOrderGuids.length === localSorted.length) {
 
-      // Kandidaten pb < pa einsammeln und nach Distanz zum neuen Portal (pa) + Distanz zum Anker sortieren.
-      // Anchor (pb === 0) bekommt metric = Infinity und kommt damit immer zuerst.
-      var newPoint = this.sortedFanpoints[pa].point;
-      var anchorPoint = this.sortedFanpoints[0].point;
-
-      var candidates = [];
-      for (pb = 0; pb < pa; pb++) {
-        var candPoint = this.sortedFanpoints[pb].point;
-
-        var d = thisplugin.distanceTo(newPoint, candPoint);
-        d += thisplugin.distanceTo(anchorPoint, candPoint);
-        var metric;
-        if (pb === 0) {
-          metric = Infinity;
-        } else {
-          metric = thisplugin.distanceTo(newPoint, candPoint);
-          metric += thisplugin.distanceTo(anchorPoint, candPoint);
-        }
-        candidates.push({
-          pbIndex: pb,
-          isAnchor: (pb === 0),
-          metric: metric
+        let byGuid = {};
+        localSorted.forEach(function (fp) {
+          byGuid[fp.guid] = fp;
         });
+
+        let newOrder = [];
+        let allPresent = true;
+
+        thisplugin.manualOrderGuids.forEach(function (guid) {
+          if (byGuid[guid]) {
+            newOrder.push(byGuid[guid]);
+          } else {
+            allPresent = false;
+          }
+        });
+
+        // Only if all GUIDs match and the anchor stays at position 0 do we accept the order
+        if (allPresent &&
+          newOrder.length === localSorted.length &&
+          newOrder[0].guid === candidateStartingpointGUID) {
+          localSorted = newOrder;
+        }
       }
 
-      candidates.sort(function (u, v) {
-        return v.metric - u.metric;
-      });
+      var pa, pb;
+      var outbound, possibleline, bearing, distance, flipped, maxLinks, wantOutbound, swapped, intersection;
 
-      var paFp = this.sortedFanpoints[pa];
-      var paPoint = paFp.point;
+      for (pa = 0; pa < localSorted.length; pa++) {
+        // Kandidaten pb < pa einsammeln und nach Distanz zum neuen Portal (pa) + Distanz zum Anker sortieren.
+        // Anchor (pb === 0) bekommt metric = Infinity und kommt damit immer zuerst.
+        var newPoint = localSorted[pa].point;
+        var anchorPoint = localSorted[0].point;
 
-
-      for (var ci = 0; ci < candidates.length; ci++) {
-        pb = candidates[ci].pbIndex;
-        outbound = 0;
-
-        a = paPoint;
-        b = this.sortedFanpoints[pb].point;
-        bearing = this.getBearing(a, b);
-        const distance = thisplugin.distanceTo(a, b);
-
-        // ghi#23 (link flip): manual direction override, for a mesh link or a portal's own anchor
-        // link (pb === 0) alike — the anchor case is handled below via the same SBUL capacity
-        // check as radiating mode.
-        var flipped = thisplugin.isLinkFlipped(this.sortedFanpoints[pa].guid, this.sortedFanpoints[pb].guid);
-
-        if (pb === 0) {
-          var maxLinks = 8 + thisplugin.availableSBUL * 8;
-          var wantOutbound = (thisplugin.stardirection === thisplugin.starDirENUM.RADIATING) || flipped;
-          if (wantOutbound && centerOutgoings < maxLinks) {
-            outbound = 1;
+        var candidates = [];
+        for (pb = 0; pb < pa; pb++) {
+          var candPoint = localSorted[pb].point;
+          var metric;
+          if (pb === 0) {
+            metric = Infinity;
           } else {
-            thisplugin.centerKeys++;
+            metric = thisplugin.distanceTo(newPoint, candPoint);
+            metric += thisplugin.distanceTo(anchorPoint, candPoint);
           }
-
-          if (outbound === 1) {
-            a = this.sortedFanpoints[pb].point;
-            b = this.sortedFanpoints[pa].point;
-            // console.log("outbound");
-            centerOutgoings++;
-          }
-        } else if (flipped) {
-          a = this.sortedFanpoints[pb].point;
-          b = paPoint;
+          candidates.push({
+            pbIndex: pb,
+            isAnchor: (pb === 0),
+            metric: metric
+          });
         }
 
-        // The actual direction was swapped either by anchor-link capacity (outbound) or by a
-        // mesh-link flip — never by `flipped` alone for pb === 0, since capacity may have
-        // refused the swap above and fallen back to the default direction.
-        var swapped = (pb === 0) ? (outbound === 1) : flipped;
+        candidates.sort(function (u, v) {
+          return v.metric - u.metric;
+        });
 
-        possibleline = {
-          a: a,
-          b: b,
-          guidA: swapped ? this.sortedFanpoints[pb].guid : this.sortedFanpoints[pa].guid,
-          guidB: swapped ? this.sortedFanpoints[pa].guid : this.sortedFanpoints[pb].guid,
-          bearing: bearing,
-          isJetLink: false,
-          isFanLink: (pb === 0),
-          creatingFieldsWith: [],
-          counts: true,
-          distance: distance
-        };
-        intersection = 0;
-        maplinks = maplinksAll;
+        var paFp = localSorted[pa];
+        var paPoint = paFp.point;
 
-        // "Respect Intel" stuff
-        if (thisplugin.isRespectingIntel()) {
-          for (i in maplinks) {
-            if (this.intersects(possibleline, maplinks[i])) {
-              intersection++;
-              if (possibleline.isFanLink && outbound === 1) centerOutgoings--;
-              break;
+        for (var ci = 0; ci < candidates.length; ci++) {
+          pb = candidates[ci].pbIndex;
+          outbound = 0;
+
+          a = paPoint;
+          b = localSorted[pb].point;
+          bearing = thisplugin.getBearing(a, b);
+          distance = thisplugin.distanceTo(a, b);
+
+          // ghi#23 (link flip): manual direction override, for a mesh link or a portal's own anchor
+          // link (pb === 0) alike — the anchor case is handled below via the same SBUL capacity
+          // check as radiating mode.
+          flipped = thisplugin.isLinkFlipped(localSorted[pa].guid, localSorted[pb].guid);
+
+          if (pb === 0) {
+            maxLinks = 8 + thisplugin.availableSBUL * 8;
+            wantOutbound = (thisplugin.stardirection === thisplugin.starDirENUM.RADIATING) || flipped;
+            if (wantOutbound && localCenterOutgoings < maxLinks) {
+              outbound = 1;
+            } else {
+              localCenterKeys++;
             }
-          }
-          var existsAsBlockingIntelLink = this.linkExists(maplinks, possibleline);
-          var existsAsOwnIntelLink = this.linkExists(thisplugin.existingIntelPlanLinks, possibleline);
-          if (intersection === 0 && (existsAsBlockingIntelLink || existsAsOwnIntelLink)) {
-            possibleline.counts = false;
-            if (possibleline.isFanLink && outbound === 1) {
-              centerOutgoings--;
-            } else if (possibleline.isFanLink) {
-              thisplugin.centerKeys--;
-            }
-          }
-        }
-        if (intersection === 0) {
-          for (i in donelinks) {
-            if (this.intersects(possibleline, donelinks[i])) {
-              intersection++;
-              if (possibleline.isFanLink && outbound === 1) centerOutgoings--;
-              break;
-            }
-          }
-        }
-        if (intersection === 0) {
-          for (i in fanlinks) {
-            if (this.intersects(possibleline, fanlinks[i])) {
-              intersection++;
-              if (possibleline.isFanLink && outbound === 1) centerOutgoings--;
-              break;
-            }
-          }
-        }
 
-        if (centerOutgoings > 8 && centerOutgoings < maxLinks) {
-          // count sbul
-          centerSbul = Math.ceil((centerOutgoings - 8) / 8);
-        }
+            if (outbound === 1) {
+              a = localSorted[pb].point;
+              b = localSorted[pa].point;
+              localCenterOutgoings++;
+            }
+          } else if (flipped) {
+            a = localSorted[pb].point;
+            b = paPoint;
+          }
 
-        if (intersection === 0) {
-          //console.log("FANPOINTS: " + pa + " - "+pb+" bearing: " + bearing + "° " + this.bearingWord(bearing));
-          // Check if Link is a jetlink and add second field
-          var thirds = [];
+          // The actual direction was swapped either by anchor-link capacity (outbound) or by a
+          // mesh-link flip — never by `flipped` alone for pb === 0, since capacity may have
+          // refused the swap above and fallen back to the default direction.
+          swapped = (pb === 0) ? (outbound === 1) : flipped;
+
+          possibleline = {
+            a: a,
+            b: b,
+            guidA: swapped ? localSorted[pb].guid : localSorted[pa].guid,
+            guidB: swapped ? localSorted[pa].guid : localSorted[pb].guid,
+            bearing: bearing,
+            isJetLink: false,
+            isFanLink: (pb === 0),
+            creatingFieldsWith: [],
+            distance: distance
+          };
+          intersection = 0;
+
+          // "Respect Intel" stuff: block crossing a currently visible link from a respected
+          // faction. A candidate that exactly coincides with such a link (rather than crossing
+          // it) is left alone here — intersects() treats shared endpoints as "not crossing" — so
+          // it's handled like any other candidate: counted, drawn, and left to the separate
+          // "Grey out done links" Task List option to grey out.
           if (thisplugin.isRespectingIntel()) {
-            if (possibleline.counts) {
-              thirds = thisplugin.getThirds2(donelinks, thisplugin.existingIntelPlanLinks, possibleline.a, possibleline.b);
+            for (i in maplinksAll) {
+              if (thisplugin.intersects(possibleline, maplinksAll[i])) {
+                intersection++;
+                if (possibleline.isFanLink && outbound === 1) localCenterOutgoings--;
+                break;
+              }
             }
-          } else {
-            // thirds = this.getThirds(donelinks, possibleline.a, possibleline.b);
-            thirds = thisplugin.getThirds2(donelinks, [], possibleline.a, possibleline.b);
           }
-
-          if (thirds.length === 2) {
-            possibleline.isJetLink = true;
-          }
-
-          possibleline.creatingFieldsWith = thirds;
-
-          let field = {}
-          for (var t in thirds) {
-            field = {
-              a: thirds[t],
-              b: possibleline.a,
-              c: possibleline.b
+          if (intersection === 0) {
+            for (i in localDonelinks) {
+              if (thisplugin.intersects(possibleline, localDonelinks[i])) {
+                intersection++;
+                if (possibleline.isFanLink && outbound === 1) localCenterOutgoings--;
+                break;
+              }
             }
-            triangles.push(field);
+          }
+          if (intersection === 0) {
+            for (i in localFanlinks) {
+              if (thisplugin.intersects(possibleline, localFanlinks[i])) {
+                intersection++;
+                if (possibleline.isFanLink && outbound === 1) localCenterOutgoings--;
+                break;
+              }
+            }
           }
 
-          if (possibleline.counts) {
-            donelinks.splice(donelinks.length - (this.sortedFanpoints.length - pa), 0, possibleline);
+          if (localCenterOutgoings > 8 && localCenterOutgoings < maxLinks) {
+            // count sbul
+            localCenterSbul = Math.ceil((localCenterOutgoings - 8) / 8);
+          }
+
+          if (intersection === 0) {
+            // Check if Link is a jetlink and add second field
+            var thirds = thisplugin.getThirds2(localDonelinks, [], possibleline.a, possibleline.b);
+
+            if (thirds.length === 2) {
+              possibleline.isJetLink = true;
+            }
+
+            possibleline.creatingFieldsWith = thirds;
+
+            for (var t in thirds) {
+              localTriangles.push({
+                a: thirds[t],
+                b: possibleline.a,
+                c: possibleline.b
+              });
+            }
+
+            localDonelinks.splice(localDonelinks.length - (localSorted.length - pa), 0, possibleline);
             if (swapped) {
               // pb is the source (anchor throwing out via capacity/flip, or a flipped mesh link).
-              this.sortedFanpoints[pb].outgoing.push(this.sortedFanpoints[pa]);
-              this.sortedFanpoints[pa].incoming.push(this.sortedFanpoints[pb]);
+              localSorted[pb].outgoing.push(localSorted[pa]);
+              localSorted[pa].incoming.push(localSorted[pb]);
 
               // Store per-link metadata (field creation) on the source portal.
               // This avoids recomputing geometry during task list export.
-              this.sortedFanpoints[pb].outgoingMeta[this.sortedFanpoints[pa].guid] = {
+              localSorted[pb].outgoingMeta[localSorted[pa].guid] = {
                 creatingFieldsWith: possibleline.creatingFieldsWith
               };
             } else {
-              this.sortedFanpoints[pa].outgoing.push(this.sortedFanpoints[pb]);
-              this.sortedFanpoints[pb].incoming.push(this.sortedFanpoints[pa]);
+              localSorted[pa].outgoing.push(localSorted[pb]);
+              localSorted[pb].incoming.push(localSorted[pa]);
 
-              this.sortedFanpoints[pa].outgoingMeta[this.sortedFanpoints[pb].guid] = {
+              localSorted[pa].outgoingMeta[localSorted[pb].guid] = {
                 creatingFieldsWith: possibleline.creatingFieldsWith
               };
             }
-
-
-
           }
-
         }
       }
+
+      return {
+        startingpointGUID: candidateStartingpointGUID,
+        startingpoint: candidateStartingpoint,
+        sortedFanpoints: localSorted,
+        donelinks: localDonelinks,
+        triangles: localTriangles,
+        n: localN,
+        centerOutgoings: localCenterOutgoings,
+        centerSbul: localCenterSbul,
+        centerKeys: localCenterKeys
+      };
+    }
+
+    if (thisplugin.perimeterpoints.length !== 0) {
+      // Right after a brand new polygon just replaced the previous portal set (never on every
+      // recalculation — this tries every hull anchor in both directions, so it's
+      // comparatively expensive) — and only while unlocked, and only when no manual portal
+      // order is active (that already fixes anchor/order by hand) — pick whichever anchor and
+      // direction reuses the most links already thrown in-game for our own faction, so the
+      // freshly (re)calculated plan lines up with real progress instead of resetting to
+      // whatever anchor/direction happened to be selected before the polygon changed.
+      if (thisplugin._orientationSearchPending) {
+        thisplugin._orientationSearchPending = false;
+
+        if (!thisplugin.is_locked && !thisplugin.manualOrderGuids) {
+          var scoreOrientation = function (idx, cw) {
+            var candidate = buildFanPlan(idx, cw);
+            var score = 0;
+            candidate.donelinks.forEach(function (link) {
+              if (link.guidA && link.guidB && thisplugin.isLinkInGame(link.guidA, link.guidB)) score++;
+            });
+            return score;
+          };
+
+          var bestIndex = thisplugin.startingpointIndex;
+          var bestClockwise = thisplugin.is_clockwise;
+          var bestScore = scoreOrientation(bestIndex, bestClockwise);
+
+          for (var oi = 0; oi < thisplugin.perimeterpoints.length; oi++) {
+            [true, false].forEach(function (cw) {
+              if (oi === bestIndex && cw === bestClockwise) return;
+              var score = scoreOrientation(oi, cw);
+              if (score > bestScore) {
+                bestScore = score;
+                bestIndex = oi;
+                bestClockwise = cw;
+              }
+            });
+          }
+
+          thisplugin.startingpointIndex = bestIndex;
+          thisplugin.is_clockwise = bestClockwise;
+        }
+      }
+
+      var builtPlan = buildFanPlan(thisplugin.startingpointIndex, thisplugin.is_clockwise);
+      thisplugin.startingpointGUID = builtPlan.startingpointGUID;
+      thisplugin.startingpoint = builtPlan.startingpoint;
+      this.sortedFanpoints = builtPlan.sortedFanpoints;
+      donelinks = builtPlan.donelinks;
+      triangles = builtPlan.triangles;
+      n = builtPlan.n;
+      centerOutgoings = builtPlan.centerOutgoings;
+      centerSbul = builtPlan.centerSbul;
+      thisplugin.centerKeys = builtPlan.centerKeys;
     }
 
     $.each(donelinks, function (i, link) {
@@ -4481,9 +4487,15 @@ function wrapper(plugin_info) {
       }
       var isInvalid = (linkKey && thisplugin.invalidUnderFieldLinks && thisplugin.invalidUnderFieldLinks[linkKey]);
 
+      // Already thrown in-game for our faction? Fade it to a muted brownish-red on the map,
+      // so only links still left to throw stay bright red — mirrors the Task List's own
+      // "Grey out done links" toggle (isLinkInGame), rather than a separate switch.
+      var isDone = thisplugin.greyOutExistingLinks && edge.guidA && edge.guidB &&
+        thisplugin.isLinkInGame(edge.guidA, edge.guidB);
+
       var baseStyle = {
-        color: '#FF0000',
-        opacity: 1,
+        color: isDone ? '#8B3A3A' : '#FF0000',
+        opacity: isDone ? 0.5 : 1,
         weight: 1.5,
         clickable: false,
         interactive: false,
@@ -4688,6 +4700,19 @@ function wrapper(plugin_info) {
     return Math.max(260, Math.floor(vw) - 12); // leave some space
   };
 
+  thisplugin.getMaxDialogHeight = function () {
+    const vh = (window.visualViewport && window.visualViewport.height) ? window.visualViewport.height : window.innerHeight;
+
+    // On mobile, the phone's own on-screen navigation bar (or the app's persistent bottom
+    // toolbar) commonly overlaps the bottom of the visible viewport without being reflected
+    // in vh/innerHeight at all — an edge-to-edge WebView reports the full screen height, then
+    // the OS/app draws its own controls on top of it. Leave generous extra clearance there so
+    // a dialog's own bottom button row doesn't end up hidden underneath it. Desktop browsers
+    // don't have this problem, so keep their margin minimal.
+    var bottomClearance = (L.Browser.mobile) ? 150 : 20;
+    return Math.max(200, Math.floor(vh) - bottomClearance);
+  };
+
   thisplugin.setup = function () {
     thisplugin.setupCSS();
     thisplugin.linksLayerGroup = new L.LayerGroup();
@@ -4767,9 +4792,10 @@ function wrapper(plugin_info) {
     var buttonLinkDirectionIndicator =
       '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_direction_indicator_btn" onclick="window.plugin.fanfields.toggleLinkDirIndicator();" title="Technology Intelligence See All">Show&nbsp;link&nbsp;dir:&nbsp;ON</a> ';
 
-    // Task List: grey out / strike through links (and finished portals) that already exist in-game
+    // Grey out / strike through links (and finished portals) that already exist in-game,
+    // in the Task List and as a faded color on the map itself
     var buttonGreyOutExistingLinks =
-      '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_greyout_existing_btn" onclick="window.plugin.fanfields.toggleGreyOutExistingLinks();" title="Grey out and strike through Task List links (and portals) that already exist in-game for your faction">Grey&nbsp;out&nbsp;done&nbsp;links:&nbsp;ON</a> ';
+      '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_greyout_existing_btn" onclick="window.plugin.fanfields.toggleGreyOutExistingLinks();" title="Grey out and strike through Task List links (and portals), and fade already-thrown links on the map, for links that already exist in-game for your faction">Grey&nbsp;out&nbsp;done&nbsp;links:&nbsp;ON</a> ';
 
     // Link order optimization: leaves the algorithm itself untouched and only reorients mesh
     // links, either for fewer keys on any single portal or for less backtracking while walking.
@@ -4851,6 +4877,18 @@ function wrapper(plugin_info) {
 
     $('#fanfields2')
       .append(fanfields_buttons);
+
+    // Default Respect Intel to the player's own faction (ENL/RES) rather than NONE, so a
+    // fresh session starts out avoiding crossing (and re-throwing) the agent's own
+    // already-built links without having to click the button first. Done here in setup()
+    // rather than at the top-level default above, since window.PLAYER isn't reliably set
+    // yet when this script's own top-level code first runs (see thisplugin.getOwnFactionTeam).
+    var ownTeamForDefault = thisplugin.getOwnFactionTeam();
+    if (ownTeamForDefault === window.TEAM_ENL) {
+      thisplugin.respectIntelLinksMode = thisplugin.respectIntelLinksModeENUM.ENL;
+    } else if (ownTeamForDefault === window.TEAM_RES) {
+      thisplugin.respectIntelLinksMode = thisplugin.respectIntelLinksModeENUM.RES;
+    }
 
     thisplugin.updateRespectIntelButton();
     thisplugin.updateGreyOutExistingLinksButton();
