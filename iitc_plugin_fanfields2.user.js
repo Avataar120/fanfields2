@@ -504,7 +504,7 @@ function wrapper(plugin_info) {
 
   // Manual per-link direction overrides (Task List "flip" button).
   // Keyed by undirected link key (getUndirectedLinkKey) -> true.
-  // Only applies to mesh links between fan points; the anchor's fan/star links are never flipped this way.
+  // Applies to mesh links between fan points as well as a portal's own anchor (fan/star) link.
   thisplugin.manualLinkFlips = {};
 
   thisplugin.saveBookmarks = function () {
@@ -1008,16 +1008,13 @@ function wrapper(plugin_info) {
           }
           linkDetailText += '</td>';
 
-          // ghi#23 (link flip): swap this link's direction, in its own compact column. Anchor links are excluded (star/fan logic).
-          var isAnchorLink = (portal.guid === thisplugin.startingpointGUID) || (outPortal.guid === thisplugin.startingpointGUID);
+          // ghi#23 (link flip): swap this link's direction, in its own compact column. Anchor (fan/star) links are flippable too.
           linkDetailText += '<td>';
-          if (!isAnchorLink) {
-            var isFlipped = thisplugin.isLinkFlipped(portal.guid, outPortal.guid);
-            linkDetailText += '<button class="plugin_fanfields2_link_flip_btn' + (isFlipped ? ' plugin_fanfields2_link_flipped' : '') +
-              '" data-guid-a="' + portal.guid + '" data-guid-b="' + outPortal.guid + '" title="' +
-              (isFlipped ? 'Manually flipped – click to restore automatic direction' : 'Reverse link direction (updates keys needed)') +
-              '">&#8646;</button>';
-          }
+          var isFlipped = thisplugin.isLinkFlipped(portal.guid, outPortal.guid);
+          linkDetailText += '<button class="plugin_fanfields2_link_flip_btn' + (isFlipped ? ' plugin_fanfields2_link_flipped' : '') +
+            '" data-guid-a="' + portal.guid + '" data-guid-b="' + outPortal.guid + '" title="' +
+            (isFlipped ? 'Manually flipped – click to restore automatic direction' : 'Reverse link direction (updates keys needed)') +
+            '">&#8646;</button>';
           linkDetailText += '</td>';
 
           let outPortalTitle = 'unknown title';
@@ -2444,11 +2441,11 @@ function wrapper(plugin_info) {
     return !!thisplugin.manualLinkFlips[thisplugin.getUndirectedLinkKey(guidA, guidB)];
   };
 
-  // Toggle the manual direction override for a mesh link (Task List "flip" button).
-  // Anchor links (fan/star links to the starting portal) are never flippable this way.
+  // Toggle the manual direction override for a link (Task List "flip" button). Works for both
+  // mesh links and a portal's own anchor (fan/star) link — for the latter, updateLayer() applies
+  // the override subject to the same SBUL outgoing-capacity check as radiating mode.
   thisplugin.toggleLinkFlip = function (guidA, guidB) {
     if (!guidA || !guidB) return;
-    if (guidA === thisplugin.startingpointGUID || guidB === thisplugin.startingpointGUID) return;
 
     var key = thisplugin.getUndirectedLinkKey(guidA, guidB);
     if (thisplugin.manualLinkFlips[key]) {
@@ -3392,12 +3389,15 @@ function wrapper(plugin_info) {
         bearing = this.getBearing(a, b);
         const distance = thisplugin.distanceTo(a, b);
 
-        // ghi#23 (link flip): manual direction override for mesh links (never for the anchor's fan/star links).
-        var flipped = (pb !== 0) && thisplugin.isLinkFlipped(this.sortedFanpoints[pa].guid, this.sortedFanpoints[pb].guid);
+        // ghi#23 (link flip): manual direction override, for a mesh link or a portal's own anchor
+        // link (pb === 0) alike — the anchor case is handled below via the same SBUL capacity
+        // check as radiating mode.
+        var flipped = thisplugin.isLinkFlipped(this.sortedFanpoints[pa].guid, this.sortedFanpoints[pb].guid);
 
         if (pb === 0) {
           var maxLinks = 8 + thisplugin.availableSBUL * 8;
-          if (thisplugin.stardirection === thisplugin.starDirENUM.RADIATING && centerOutgoings < maxLinks) {
+          var wantOutbound = (thisplugin.stardirection === thisplugin.starDirENUM.RADIATING) || flipped;
+          if (wantOutbound && centerOutgoings < maxLinks) {
             outbound = 1;
           } else {
             thisplugin.centerKeys++;
@@ -3414,11 +3414,16 @@ function wrapper(plugin_info) {
           b = paPoint;
         }
 
+        // The actual direction was swapped either by anchor-link capacity (outbound) or by a
+        // mesh-link flip — never by `flipped` alone for pb === 0, since capacity may have
+        // refused the swap above and fallen back to the default direction.
+        var swapped = (pb === 0) ? (outbound === 1) : flipped;
+
         possibleline = {
           a: a,
           b: b,
-          guidA: (outbound === 1 || flipped) ? this.sortedFanpoints[pb].guid : this.sortedFanpoints[pa].guid,
-          guidB: (outbound === 1 || flipped) ? this.sortedFanpoints[pa].guid : this.sortedFanpoints[pb].guid,
+          guidA: swapped ? this.sortedFanpoints[pb].guid : this.sortedFanpoints[pa].guid,
+          guidB: swapped ? this.sortedFanpoints[pa].guid : this.sortedFanpoints[pb].guid,
           bearing: bearing,
           isJetLink: false,
           isFanLink: (pb === 0),
@@ -3504,21 +3509,13 @@ function wrapper(plugin_info) {
 
           if (possibleline.counts) {
             donelinks.splice(donelinks.length - (this.sortedFanpoints.length - pa), 0, possibleline);
-            if (pb === 0 && thisplugin.stardirection === thisplugin.starDirENUM.RADIATING && outbound === 1) {
+            if (swapped) {
+              // pb is the source (anchor throwing out via capacity/flip, or a flipped mesh link).
               this.sortedFanpoints[pb].outgoing.push(this.sortedFanpoints[pa]);
               this.sortedFanpoints[pa].incoming.push(this.sortedFanpoints[pb]);
 
               // Store per-link metadata (field creation) on the source portal.
               // This avoids recomputing geometry during task list export.
-              this.sortedFanpoints[pb].outgoingMeta[this.sortedFanpoints[pa].guid] = {
-                creatingFieldsWith: possibleline.creatingFieldsWith
-              };
-
-            } else if (flipped) {
-              // ghi#23 (link flip): pb is now the source, pa the destination.
-              this.sortedFanpoints[pb].outgoing.push(this.sortedFanpoints[pa]);
-              this.sortedFanpoints[pa].incoming.push(this.sortedFanpoints[pb]);
-
               this.sortedFanpoints[pb].outgoingMeta[this.sortedFanpoints[pa].guid] = {
                 creatingFieldsWith: possibleline.creatingFieldsWith
               };
