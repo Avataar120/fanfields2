@@ -37,6 +37,8 @@ function wrapper(plugin_info) {
       changes: [
         'FIX: Respect Intel now only blocks crossing the selected factions\' links, even when your own faction is included — it no longer changes anything else about how already-existing links are handled or displayed.',
         'FIX: Task List\'s Links column now shows how many outgoing links are still left to throw from a portal, instead of its total outgoing link count.',
+        'NEW: Already-thrown links now show as a faded brownish-red on the map itself, not just in the Task List — only links still left to throw stay bright red. Toggle via the same "Grey out done links" button.',
+        'FIX: Task List link details no longer look bold for a still-to-throw link — lighter, slightly smaller text than before.',
       ],
     },{
       version: '2.8.10',
@@ -2024,14 +2026,16 @@ function wrapper(plugin_info) {
     thisplugin.delayedUpdateLayer(0.2);
   };
 
-  // Task List: grey out / strike through links (and, once all of a portal's
-  // links exist, the portal name too) that already exist in-game for the
-  // player's own faction. Requested as a toggleable plugin option.
+  // Grey out / strike through links (and, once all of a portal's links exist, the portal
+  // name too) that already exist in-game for the player's own faction — in the Task List,
+  // and as a faded brownish-red on the map itself (thisplugin.updateLayer()'s own drawing
+  // loop) instead of bright red. Requested as a toggleable plugin option.
   thisplugin.greyOutExistingLinks = true;
   thisplugin.toggleGreyOutExistingLinks = function () {
     thisplugin.greyOutExistingLinks = !thisplugin.greyOutExistingLinks;
     thisplugin.updateGreyOutExistingLinksButton();
     thisplugin.refreshTaskListIfOpen();
+    thisplugin.updateLayer();
   };
   thisplugin.updateGreyOutExistingLinksButton = function () {
     $('#plugin_fanfields2_greyout_existing_btn')
@@ -4408,9 +4412,15 @@ function wrapper(plugin_info) {
       }
       var isInvalid = (linkKey && thisplugin.invalidUnderFieldLinks && thisplugin.invalidUnderFieldLinks[linkKey]);
 
+      // Already thrown in-game for our faction? Fade it to a muted brownish-red on the map,
+      // so only links still left to throw stay bright red — mirrors the Task List's own
+      // "Grey out done links" toggle (isLinkInGame), rather than a separate switch.
+      var isDone = thisplugin.greyOutExistingLinks && edge.guidA && edge.guidB &&
+        thisplugin.isLinkInGame(edge.guidA, edge.guidB);
+
       var baseStyle = {
-        color: '#FF0000',
-        opacity: 1,
+        color: isDone ? '#8B3A3A' : '#FF0000',
+        opacity: isDone ? 0.5 : 1,
         weight: 1.5,
         clickable: false,
         interactive: false,
@@ -4694,9 +4704,10 @@ function wrapper(plugin_info) {
     var buttonLinkDirectionIndicator =
       '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_direction_indicator_btn" onclick="window.plugin.fanfields.toggleLinkDirIndicator();" title="Technology Intelligence See All">Show&nbsp;link&nbsp;dir:&nbsp;ON</a> ';
 
-    // Task List: grey out / strike through links (and finished portals) that already exist in-game
+    // Grey out / strike through links (and finished portals) that already exist in-game,
+    // in the Task List and as a faded color on the map itself
     var buttonGreyOutExistingLinks =
-      '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_greyout_existing_btn" onclick="window.plugin.fanfields.toggleGreyOutExistingLinks();" title="Grey out and strike through Task List links (and portals) that already exist in-game for your faction">Grey&nbsp;out&nbsp;done&nbsp;links:&nbsp;ON</a> ';
+      '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_greyout_existing_btn" onclick="window.plugin.fanfields.toggleGreyOutExistingLinks();" title="Grey out and strike through Task List links (and portals), and fade already-thrown links on the map, for links that already exist in-game for your faction">Grey&nbsp;out&nbsp;done&nbsp;links:&nbsp;ON</a> ';
 
     // Link order optimization: leaves the algorithm itself untouched and only reorients mesh
     // links, either for fewer keys on any single portal or for less backtracking while walking.
