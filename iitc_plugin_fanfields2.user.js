@@ -4651,7 +4651,15 @@ function wrapper(plugin_info) {
 
   thisplugin.getMaxDialogHeight = function () {
     const vh = (window.visualViewport && window.visualViewport.height) ? window.visualViewport.height : window.innerHeight;
-    return Math.max(200, Math.floor(vh) - 20); // leave some space
+
+    // On mobile, the phone's own on-screen navigation bar (or the app's persistent bottom
+    // toolbar) commonly overlaps the bottom of the visible viewport without being reflected
+    // in vh/innerHeight at all — an edge-to-edge WebView reports the full screen height, then
+    // the OS/app draws its own controls on top of it. Leave generous extra clearance there so
+    // a dialog's own bottom button row doesn't end up hidden underneath it. Desktop browsers
+    // don't have this problem, so keep their margin minimal.
+    var bottomClearance = (L.Browser.mobile) ? 90 : 20;
+    return Math.max(200, Math.floor(vh) - bottomClearance);
   };
 
   thisplugin.setup = function () {
