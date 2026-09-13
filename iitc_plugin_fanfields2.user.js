@@ -783,8 +783,9 @@ function wrapper(plugin_info) {
         'To drop every automatic and manual override at once and go back to the plain algorithm, use the Task List\'s <i>Reset&nbsp;link&nbsp;orders</i> button.</p>' +
 
         '<p><b>Freeze recalculation</b><br>' +
-        'Use <i>🔒&nbsp;Locked</i> to prevent the script from recalculating while you zoom into details or work with large areas. ' +
-        'Switch back to <i>🔓&nbsp;Unlocked</i> to refresh after changes.</p>' +
+        'Use <i>🔒&nbsp;Locked</i> to prevent the script from recalculating the plan while you zoom into details or work with large areas. ' +
+        'The Task List keeps reflecting portal captures and links thrown in-game while locked — only the plan itself (link/field order) stays frozen. ' +
+        'Switch back to <i>🔓&nbsp;Unlocked</i> to let the plan itself refresh again.</p>' +
 
         '<p><b>Task list & exports</b><br>' +
         'Open <i>Task List</i> to get a step-by-step plan including per-portal key requirements, outgoing link counts, and (optional) link details. ' +
@@ -4483,6 +4484,43 @@ function wrapper(plugin_info) {
 
   };
 
+  // Rebuild thisplugin.locations (portal guid -> projected point) and thisplugin.intelLinks
+  // (currently existing in-game links) straight from IITC's live portal/link data. This is
+  // the cheap subset of what updateLayer() does — it doesn't touch the plan itself (link/field
+  // order, drawn layers), just the live game state the Task List reads to grey out/strike
+  // through captured portals and already-thrown links. Safe to run even while Locked, unlike
+  // the full plan recompute Locked exists to suppress — see thisplugin.onLiveDataChanged.
+  thisplugin.refreshLiveGameData = function () {
+    thisplugin.locations = [];
+    $.each(window.portals, function (guid, portal) {
+      thisplugin.locations[guid] = map.project(portal.getLatLng(), thisplugin.PROJECT_ZOOM);
+    });
+
+    thisplugin.intelLinks = {};
+    $.each(window.links, function (guid, link) {
+      var lls = link.getLatLngs();
+      thisplugin.intelLinks[guid] = {
+        a: map.project(lls[0], thisplugin.PROJECT_ZOOM),
+        b: map.project(lls[1], thisplugin.PROJECT_ZOOM),
+        team: link.options.team
+      };
+    });
+  };
+
+  // Called when IITC's own portal/link data changes (new links thrown in-game, portals
+  // captured, etc. — see the mapDataRefreshEnd/requestFinished hooks below). Unlike
+  // moveend/zoom, which just changes which area the user is looking at, this reflects an
+  // actual change to the game state, so it should still reach the Task List even while
+  // Locked — but only as the lightweight live-data refresh above, not the full plan recompute.
+  thisplugin.onLiveDataChanged = function (wait) {
+    if (thisplugin.is_locked) {
+      thisplugin.refreshLiveGameData();
+      thisplugin.refreshTaskListIfOpen();
+    } else {
+      thisplugin.delayedUpdateLayer(wait);
+    }
+  };
+
   // IITC's own portal/link data refresh (the countdown shown in the status bar) runs on a
   // JS timer, which mobile browsers/PWAs throttle or fully suspend while the app is in the
   // background (screen locked, app switched away from) — so the plan and Task List can go
@@ -4751,11 +4789,11 @@ function wrapper(plugin_info) {
       thisplugin.delayedUpdateLayer(0.5);
     });
     window.addHook('mapDataRefreshEnd', function () {
-      thisplugin.delayedUpdateLayer(0.5);
+      thisplugin.onLiveDataChanged(0.5);
     });
     window.addHook('requestFinished', function () {
       setTimeout(function () {
-        thisplugin.delayedUpdateLayer(3.0);
+        thisplugin.onLiveDataChanged(3.0);
       }, 1);
     });
 
