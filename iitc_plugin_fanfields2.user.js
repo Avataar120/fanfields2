@@ -1431,6 +1431,14 @@ function wrapper(plugin_info) {
       width: width,
       closeOnEscape: true
     });
+
+    // Pinned to the top of the screen rather than jQuery UI's default vertical centering: as
+    // the dialog's height gets capped (see getMaxDialogHeight), centering would just push it
+    // further down instead of shrinking it upward, defeating the point of the cap on a short
+    // mobile screen.
+    $('#plugin_fanfields2_alert_textExport')
+      .dialog('option', 'position', { my: 'top', at: 'top+10', of: window });
+
     thisplugin.wireTaskListHandlers();
     thisplugin.addTaskListShiftButtons();
 
@@ -4658,7 +4666,7 @@ function wrapper(plugin_info) {
     // the OS/app draws its own controls on top of it. Leave generous extra clearance there so
     // a dialog's own bottom button row doesn't end up hidden underneath it. Desktop browsers
     // don't have this problem, so keep their margin minimal.
-    var bottomClearance = (L.Browser.mobile) ? 90 : 20;
+    var bottomClearance = (L.Browser.mobile) ? 150 : 20;
     return Math.max(200, Math.floor(vh) - bottomClearance);
   };
 
