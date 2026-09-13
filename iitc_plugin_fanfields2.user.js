@@ -40,6 +40,7 @@ function wrapper(plugin_info) {
         'NEW: Already-thrown links now show as a faded brownish-red on the map itself, not just in the Task List — only links still left to throw stay bright red. Toggle via the same "Grey out done links" button.',
         'FIX: Task List link details no longer look bold for a still-to-throw link — lighter, slightly smaller text than before.',
         'NEW: Respect Intel now defaults to your own faction (ENL or RES) instead of NONE.',
+        'FIX: Task List\'s Refresh/shift/OK buttons were unreachable on mobile once the list had enough portals to grow taller than the screen — the list now caps its height to the visible screen and scrolls its own content instead.',
       ],
     },{
       version: '2.8.10',
@@ -1451,6 +1452,26 @@ function wrapper(plugin_info) {
     var $ui = $dlg.closest('.ui-dialog');
     var $buttonpane = ($ui.length ? $ui : $dlg).find('.ui-dialog-buttonpane');
     if (!$buttonpane.length) return;
+
+    // On a tall Task List (many portals), the dialog can grow taller than the visible
+    // viewport, pushing this very button row (and the OK button) below the visible screen —
+    // unreachable, since jQuery UI's dialog has no built-in max height. Cap the dialog to the
+    // viewport and let only its content area scroll, so the title bar and this button row
+    // always stay in view. Reapplied every time this is called (each dialog open), since the
+    // viewport can differ between opens (e.g. after rotating the screen).
+    if ($ui.length) {
+      $ui.css({
+        'max-height': thisplugin.getMaxDialogHeight() + 'px',
+        'display': 'flex',
+        'flex-direction': 'column'
+      });
+      $ui.find('.ui-dialog-content')
+        .css({
+          'flex': '1 1 auto',
+          'overflow-y': 'auto'
+        });
+      $buttonpane.css('flex', '0 0 auto');
+    }
 
     // Already added (e.g. dialog reused rather than recreated)?
     if ($buttonpane.find('#plugin_fanfields2_tasklist_shift_left').length) return;
@@ -4626,6 +4647,11 @@ function wrapper(plugin_info) {
   thisplugin.getMaxDialogWidth = function () {
     const vw = (window.visualViewport && window.visualViewport.width) ? window.visualViewport.width : window.innerWidth;
     return Math.max(260, Math.floor(vw) - 12); // leave some space
+  };
+
+  thisplugin.getMaxDialogHeight = function () {
+    const vh = (window.visualViewport && window.visualViewport.height) ? window.visualViewport.height : window.innerHeight;
+    return Math.max(200, Math.floor(vh) - 20); // leave some space
   };
 
   thisplugin.setup = function () {
