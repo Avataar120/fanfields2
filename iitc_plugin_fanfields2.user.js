@@ -46,6 +46,7 @@ function wrapper(plugin_info) {
       version: '2.8.5',
       changes: [
         'NEW: Task List strikes through a link line already made in-game for your faction (grey), and once all of a portal\'s links exist, fades and strikes through that whole portal line too (yellow). Toggle via the "Grey out done links" button.',
+        'NEW: Task List no longer counts a key toward a portal\'s "Keys needed" once the link it was meant for already exists in-game.',
         'NEW: Task List now refreshes itself live as the background plan changes (new links appearing in-game, fan field rotation, anchor changes, ...) — no need to close and reopen it.',
       ],
     },{
@@ -1022,7 +1023,20 @@ function wrapper(plugin_info) {
           return thisplugin.isLinkInGame(portal.guid, outPortal.guid);
         });
 
-      var keysNeeded = (portal.incomingValidCount !== undefined) ? portal.incomingValidCount : portal.incoming.length;
+      // Incoming links that already exist in-game don't need a key anymore: that key was
+      // already spent to make the link. Subtract them from the portal's remaining key count.
+      var alreadyLinkedIncomingCount = 0;
+      if (thisplugin.greyOutExistingLinks && portal.incoming && portal.incoming.length > 0) {
+        portal.incoming.forEach(function (srcPortal) {
+          var srcMeta = srcPortal.outgoingMeta && srcPortal.outgoingMeta[portal.guid];
+          var isInvalid = srcMeta && srcMeta.invalidUnderField;
+          if (!isInvalid && thisplugin.isLinkInGame(srcPortal.guid, portal.guid)) {
+            alreadyLinkedIncomingCount++;
+          }
+        });
+      }
+
+      var keysNeeded = ((portal.incomingValidCount !== undefined) ? portal.incomingValidCount : portal.incoming.length) - alreadyLinkedIncomingCount;
 
       let availableKeysText = '';
       let availableKeys = 0;
@@ -1868,6 +1882,7 @@ function wrapper(plugin_info) {
   thisplugin.toggleGreyOutExistingLinks = function () {
     thisplugin.greyOutExistingLinks = !thisplugin.greyOutExistingLinks;
     thisplugin.updateGreyOutExistingLinksButton();
+    thisplugin.refreshTaskListIfOpen();
   };
   thisplugin.updateGreyOutExistingLinksButton = function () {
     $('#plugin_fanfields2_greyout_existing_btn')
