@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.8.20260913
+// @version         2.8.9.20260913
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-13-150000';
+  plugin_info.dateTimeVersion = '2026-09-13-180000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,15 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.9',
+      changes: [
+        'NEW: Task List\'s Action column now shows Capture, Link, Keys or Nothing for each portal, based on what actually still needs doing there (not owned or under 8 resonators, outgoing links left, incoming links or keys still needed, or fully done).',
+        'NEW: The Links and Keys columns now fade and strike through on their own once that count is settled, even before the whole portal is done.',
+        'NEW: A small camera icon marks Volatile Scout Controlled portals next to their name in the Task List.',
+        'FIX: Portal ownership was never correctly detected, so the Task List never recognized a portal as already captured.',
+        'FIX: Tooltips no longer pop up on tap on mobile in the Task List.',
+      ],
+    },{
       version: '2.8.8',
       changes: [
         'NEW: Coming back to IITC after it was in the background (app switch, screen lock) now triggers a data refresh right away, instead of waiting for IITC\'s own refresh timer or needing to pan/zoom the map manually.',
