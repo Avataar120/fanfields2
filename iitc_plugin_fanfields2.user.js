@@ -1410,7 +1410,52 @@ function wrapper(plugin_info) {
       closeOnEscape: true
     });
     thisplugin.wireTaskListHandlers();
+    thisplugin.addTaskListShiftButtons();
 
+  };
+
+  // Task List dialog: add the same anchor shift (rotation) controls as the map's own
+  // topleft control, to the left of the dialog's OK button, so the start portal can be
+  // cycled without leaving the Task List open. Only needs wiring once per dialog open —
+  // unlike the table itself, the button pane isn't touched by refreshTaskListDialog().
+  thisplugin.addTaskListShiftButtons = function () {
+    var id = 'plugin_fanfields2_alert_textExport';
+
+    var $dlg = $('#dialog-' + id + ' .ui-dialog-content');
+    if (!$dlg.length) $dlg = $('#dialog-' + id);
+    if (!$dlg.length) $dlg = $('#' + id);
+    if (!$dlg.length) return;
+
+    var $ui = $dlg.closest('.ui-dialog');
+    var $buttonpane = ($ui.length ? $ui : $dlg).find('.ui-dialog-buttonpane');
+    if (!$buttonpane.length) return;
+
+    // Already added (e.g. dialog reused rather than recreated)?
+    if ($buttonpane.find('#plugin_fanfields2_tasklist_shift_left').length) return;
+
+    var buttonsHtml =
+      '<button type="button" id="plugin_fanfields2_tasklist_shift_left" class="plugin_fanfields2_tasklist_shift_btn" title="FanFields shift left">' +
+      symbol_counterclockwise + '</button>' +
+      '<button type="button" id="plugin_fanfields2_tasklist_shift_right" class="plugin_fanfields2_tasklist_shift_btn" title="FanFields shift right">' +
+      symbol_clockwise + '</button>';
+
+    var $buttonset = $buttonpane.find('.ui-dialog-buttonset');
+    if ($buttonset.length) {
+      $buttonset.prepend(buttonsHtml);
+    } else {
+      $buttonpane.prepend(buttonsHtml);
+    }
+
+    $buttonpane.find('#plugin_fanfields2_tasklist_shift_left')
+      .off('click')
+      .on('click', function () {
+        thisplugin.previousStartingPoint();
+      });
+    $buttonpane.find('#plugin_fanfields2_tasklist_shift_right')
+      .off('click')
+      .on('click', function () {
+        thisplugin.nextStartingPoint();
+      });
   };
 
   thisplugin.exportTaskListToPDF = function () {
@@ -2304,6 +2349,18 @@ function wrapper(plugin_info) {
       '#plugin_fanfields2_reset_link_flips_btn[disabled] {\n' +
       '  opacity: 0.4;\n' +
       '  cursor: default;\n' +
+      '}\n'
+    );
+
+    // Task List dialog: anchor shift (rotation) buttons, added to the left of the dialog's
+    // own OK button so the plan's start portal can be cycled without leaving the list.
+    addCSS('\n' +
+      '.plugin_fanfields2_tasklist_shift_btn {\n' +
+      '  float: left;\n' +
+      '  cursor: pointer;\n' +
+      '}\n' +
+      '.plugin_fanfields2_tasklist_shift_btn:last-of-type {\n' +
+      '  margin-right: 10px;\n' +
       '}\n'
     );
 
@@ -4577,6 +4634,15 @@ function wrapper(plugin_info) {
         // hard-stop double click
         L.DomEvent.on(container, 'dblclick', L.DomEvent.stop);
 
+
+        $(container)
+          .append(
+            '<a id="fanfieldTaskListButton" href="javascript: void(0);" class="fanfields-control" title="Fan Fields 2 - Task List">' +
+            symbol_clipboard + '</a>'
+          )
+          .on("click", "#fanfieldTaskListButton", function () {
+            thisplugin.exportText();
+          });
 
         $(container)
           .append(
