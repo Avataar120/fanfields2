@@ -41,6 +41,7 @@ function wrapper(plugin_info) {
         'FIX: Task List link details no longer look bold for a still-to-throw link — lighter, slightly smaller text than before.',
         'NEW: Respect Intel now defaults to your own faction (ENL or RES) instead of NONE.',
         'FIX: Task List\'s Refresh/shift/OK buttons were unreachable on mobile once the list had enough portals to grow taller than the screen — the list now caps its height to the visible screen and scrolls its own content instead.',
+        'NEW: After a new (or edited) polygon replaces the previous one, the plan now automatically searches for whichever starting portal and direction reuses the most links already thrown in-game for your faction, instead of keeping an arbitrary orientation. Skipped while Locked or when a manual portal order is active.',
       ],
     },{
       version: '2.8.10',
@@ -604,6 +605,15 @@ function wrapper(plugin_info) {
   // Task List ↔ button — that's meant to stick until the user re-optimizes on purpose.
   // Starts true so the default DISTANCE mode computes as soon as the very first plan exists.
   thisplugin._linkOrderRecomputePending = true;
+
+  // Set whenever the portal set itself just changed (a new/edited polygon replaced the
+  // previous one — see the lastPlanSignature check in updateLayer()), so the next
+  // updateLayer() run searches for whichever anchor/direction reuses the most links already
+  // thrown in-game for our own faction, instead of keeping whatever anchor/direction happened
+  // to be selected before. Never set for anything else (order changes, zoom, link flips, ...)
+  // — this search tries every hull anchor in both directions, so it's deliberately reserved
+  // for an actual new polygon rather than every recalculation.
+  thisplugin._orientationSearchPending = false;
 
   // The walk/display order: thisplugin.sortedFanpoints reordered per thisplugin.displayOrderGuids
   // (the "Less walking" relocation — see above), or thisplugin.sortedFanpoints itself unchanged
@@ -3729,20 +3739,12 @@ function wrapper(plugin_info) {
   thisplugin.donelinks = [];
 
   thisplugin.updateLayer = function () {
-    var a, b, c;
-    var fanlinks = [],
-      donelinks = [],
-      maplinks = [];
+    var donelinks = [];
     var triangles = [];
     var n = 0;
-    // var directiontest;
     var centerOutgoings = 0;
     var centerSbul = 0;
-    var pa, i, pb, k, ll, p;
-    var guid;
-    var polygon, intersection;
-    // var starting_ll , fanpoint_ll ;
-    var fp_index, fp, bearing, sublinkCount;
+    var i;
     thisplugin.startingpoint = undefined;
     thisplugin.startingpointGUID = "";
     thisplugin.startingMarker = undefined;
@@ -3944,6 +3946,15 @@ function wrapper(plugin_info) {
       }
     }
 
+    // A brand new portal set — including the very first one right after IITC/this plugin
+    // loads, when a polygon restored from DrawTools typically shows before all of its portals
+    // have actually finished loading in, so this keeps firing again as more of them stream in
+    // and the signature keeps changing on each subsequent run — should search for the best
+    // matching anchor/direction below, not just later, already-established plans.
+    if (thisplugin.lastPlanSignature !== currentSignature) {
+      thisplugin._orientationSearchPending = true;
+    }
+
     // Store signature for the next run
     thisplugin.lastPlanSignature = currentSignature;
 
@@ -4043,23 +4054,36 @@ function wrapper(plugin_info) {
 
     console.log("startingpointIndex = " + thisplugin.startingpointIndex);
 
-    if (thisplugin.perimeterpoints.length !== 0) {
-      thisplugin.startingpointGUID = thisplugin.perimeterpoints[thisplugin.startingpointIndex][0];
-      thisplugin.startingpoint = this.fanpoints[thisplugin.startingpointGUID];
-      //console.log("Starting point : " + thisplugin.startingpointGUID);
-      //console.log("=> " + thisplugin.startingpoint);
+    // Builds a candidate plan for a given anchor (perimeter index) and direction, entirely in
+    // local state — never touching thisplugin.startingpointIndex/is_clockwise/sortedFanpoints/
+    // links/triangles/centerKeys, etc. This used to be a single inline block computed only
+    // once per run, for whatever anchor/direction was already selected; it's now a reusable,
+    // side-effect-free building block, so it can also be tried out repeatedly — for different
+    // candidate anchors/directions — by searchBestOrientation below, before committing to one.
+    function buildFanPlan(startIndex, clockwise) {
+      var localN = 0;
+      var localCenterOutgoings = 0;
+      var localCenterSbul = 0;
+      var localCenterKeys = 0;
+      var localFanlinks = [];
+      var localDonelinks = [];
+      var localTriangles = [];
+      var localSorted = [];
 
-      for (guid in this.fanpoints) {
-        n++;
-        if (this.fanpoints[guid].equals(thisplugin.startingpoint)) {
+      var candidateStartingpointGUID = thisplugin.perimeterpoints[startIndex][0];
+      var candidateStartingpoint = thisplugin.fanpoints[candidateStartingpointGUID];
 
+      var guid, a, b, fp, i;
+
+      for (guid in thisplugin.fanpoints) {
+        localN++;
+        if (thisplugin.fanpoints[guid].equals(candidateStartingpoint)) {
           continue;
         } else {
+          a = thisplugin.fanpoints[guid];
+          b = candidateStartingpoint;
 
-          a = this.fanpoints[guid];
-          b = thisplugin.startingpoint;
-
-          fanlinks.push({
+          localFanlinks.push({
             a: a,
             b: b,
             bearing: undefined,
@@ -4067,304 +4091,317 @@ function wrapper(plugin_info) {
             isFanLink: undefined,
             distance: thisplugin.distanceTo(a, b)
           });
-
-
-
-
         }
       }
 
-      for (guid in this.fanpoints) {
-        fp = this.fanpoints[guid];
-        this.sortedFanpoints.push({
+      for (guid in thisplugin.fanpoints) {
+        fp = thisplugin.fanpoints[guid];
+        localSorted.push({
           point: fp,
           portal: portals[guid],
-          bearing: this.getBearing(thisplugin.startingpoint, fp),
+          bearing: thisplugin.getBearing(candidateStartingpoint, fp),
           guid: guid,
           incoming: [],
           outgoing: [],
           outgoingMeta: {},
-          is_startpoint: this.fanpoints[guid].equals(thisplugin.startingpoint)
+          is_startpoint: thisplugin.fanpoints[guid].equals(candidateStartingpoint)
         });
-
       }
-      this.sortedFanpoints.sort(function (a, b) {
+      localSorted.sort(function (a, b) {
         return a.bearing - b.bearing;
       });
-    }
-    /*
-        // Apply manual order, if present
-        if (thisplugin.manualOrderGuids &&
-            thisplugin.manualOrderGuids.length === this.sortedFanpoints.length) {
 
-            let byGuid = {};
-            this.sortedFanpoints.forEach(function(fp) {
-                byGuid[fp.guid] = fp;
-            });
-
-            let newOrder = [];
-            let allPresent = true;
-
-            thisplugin.manualOrderGuids.forEach(function(guid) {
-                if (byGuid[guid]) {
-                    newOrder.push(byGuid[guid]);
-                } else {
-                    allPresent = false;
-                }
-            });
-
-            // Only apply if everything is consistent
-            if (allPresent &&
-                newOrder.length === this.sortedFanpoints.length &&
-                newOrder[0].guid === thisplugin.startingpointGUID) {
-                this.sortedFanpoints = newOrder;
-            }
-
+      // rotate localSorted until the bearing to the anchor has the longest gap to the previous
+      // one. if no gap bigger 90° is present, start with the longest link.
+      var currentBearing, lastBearing;
+      var gap, lastGap, maxGap, maxGapIndex, maxGapBearing;
+      for (i in localSorted) {
+        if (lastBearing === undefined) {
+          lastBearing = localSorted[localSorted.length - 1].bearing;
+          gap = 0;
+          lastGap = 0;
+          maxGap = 0;
+          maxGapIndex = 0;
+          maxGapBearing = 0;
         }
-        */
+        currentBearing = localSorted[i].bearing;
+        gap = lastBearing - currentBearing;
+        if (gap < 0) gap *= -1;
+        if (gap >= 180) gap = 360 - gap;
 
-    //console.log("rotating...");
-    // rotate the this.sortedFanpoints array until the bearing to the startingpoint has the longest gap to the previous one.
-    // if no gap bigger 90° is present, start with the longest link.
-    var currentBearing, lastBearing;
-    var gaps = [];
-    var gap, lastGap, maxGap, maxGapIndex, maxGapBearing;
-    for (i in this.sortedFanpoints) {
-      if (lastBearing === undefined) {
-        lastBearing = this.sortedFanpoints[this.sortedFanpoints.length - 1].bearing;
-        gap = 0;
-        lastGap = 0;
-        maxGap = 0;
-        maxGapIndex = 0;
-        maxGapBearing = 0;
-      }
-      currentBearing = this.sortedFanpoints[i].bearing;
-      gap = lastBearing - currentBearing;
-      if (gap < 0) gap *= -1;
-      if (gap >= 180) gap = 360 - gap;
-
-      if (gap > maxGap) {
-        maxGap = gap;
-        maxGapIndex = i;
-        maxGapBearing = currentBearing;
-      }
-      lastBearing = currentBearing;
-      lastGap = gap;
-    }
-
-    this.sortedFanpoints = this.sortedFanpoints.concat(this.sortedFanpoints.splice(1, maxGapIndex - 1));
-    if (!thisplugin.is_clockwise) {
-      // reverse all but the first element
-      this.sortedFanpoints = this.sortedFanpoints.concat(this.sortedFanpoints.splice(1, this.sortedFanpoints.length - 1)
-        .reverse());
-      //lines.sort(function(a, b){return b.bearing - a.bearing;});
-    }
-
-    // ghi#23
-    // ======= APPLY MANUAL ORDER (if present) =======
-    if (thisplugin.manualOrderGuids &&
-      thisplugin.manualOrderGuids.length === this.sortedFanpoints.length) {
-
-      let byGuid = {};
-      this.sortedFanpoints.forEach(function (fp) {
-        byGuid[fp.guid] = fp;
-      });
-
-      let newOrder = [];
-      let allPresent = true;
-
-      thisplugin.manualOrderGuids.forEach(function (guid) {
-        if (byGuid[guid]) {
-          newOrder.push(byGuid[guid]);
-        } else {
-          allPresent = false;
+        if (gap > maxGap) {
+          maxGap = gap;
+          maxGapIndex = i;
+          maxGapBearing = currentBearing;
         }
-      });
-
-      // Only if all GUIDs match and the anchor stays at position 0 do we accept the order
-      if (allPresent &&
-        newOrder.length === this.sortedFanpoints.length &&
-        newOrder[0].guid === thisplugin.startingpointGUID) {
-        this.sortedFanpoints = newOrder;
+        lastBearing = currentBearing;
+        lastGap = gap;
       }
-    }
-    // ======= END MANUAL ORDER =======
 
-    donelinks = [];
-    var outbound = 0;
-    var possibleline;
+      localSorted = localSorted.concat(localSorted.splice(1, maxGapIndex - 1));
+      if (!clockwise) {
+        // reverse all but the first element
+        localSorted = localSorted.concat(localSorted.splice(1, localSorted.length - 1)
+          .reverse());
+      }
 
-    for (pa = 0; pa < this.sortedFanpoints.length; pa++) {
-      bearing = this.sortedFanpoints[pa].bearing;
-      //console.log("FANPOINTS: " + pa + " to 0 bearing: "+ bearing + " " + this.bearingWord(bearing));
-      sublinkCount = 0;
+      // ghi#23: Manage Portal Order's manual order, applied on top of whichever anchor/
+      // direction produced this base order — orthogonal to the search below.
+      if (thisplugin.manualOrderGuids &&
+        thisplugin.manualOrderGuids.length === localSorted.length) {
 
-      // Kandidaten pb < pa einsammeln und nach Distanz zum neuen Portal (pa) + Distanz zum Anker sortieren.
-      // Anchor (pb === 0) bekommt metric = Infinity und kommt damit immer zuerst.
-      var newPoint = this.sortedFanpoints[pa].point;
-      var anchorPoint = this.sortedFanpoints[0].point;
-
-      var candidates = [];
-      for (pb = 0; pb < pa; pb++) {
-        var candPoint = this.sortedFanpoints[pb].point;
-
-        var d = thisplugin.distanceTo(newPoint, candPoint);
-        d += thisplugin.distanceTo(anchorPoint, candPoint);
-        var metric;
-        if (pb === 0) {
-          metric = Infinity;
-        } else {
-          metric = thisplugin.distanceTo(newPoint, candPoint);
-          metric += thisplugin.distanceTo(anchorPoint, candPoint);
-        }
-        candidates.push({
-          pbIndex: pb,
-          isAnchor: (pb === 0),
-          metric: metric
+        let byGuid = {};
+        localSorted.forEach(function (fp) {
+          byGuid[fp.guid] = fp;
         });
+
+        let newOrder = [];
+        let allPresent = true;
+
+        thisplugin.manualOrderGuids.forEach(function (guid) {
+          if (byGuid[guid]) {
+            newOrder.push(byGuid[guid]);
+          } else {
+            allPresent = false;
+          }
+        });
+
+        // Only if all GUIDs match and the anchor stays at position 0 do we accept the order
+        if (allPresent &&
+          newOrder.length === localSorted.length &&
+          newOrder[0].guid === candidateStartingpointGUID) {
+          localSorted = newOrder;
+        }
       }
 
-      candidates.sort(function (u, v) {
-        return v.metric - u.metric;
-      });
+      var pa, pb;
+      var outbound, possibleline, bearing, distance, flipped, maxLinks, wantOutbound, swapped, intersection;
 
-      var paFp = this.sortedFanpoints[pa];
-      var paPoint = paFp.point;
+      for (pa = 0; pa < localSorted.length; pa++) {
+        // Kandidaten pb < pa einsammeln und nach Distanz zum neuen Portal (pa) + Distanz zum Anker sortieren.
+        // Anchor (pb === 0) bekommt metric = Infinity und kommt damit immer zuerst.
+        var newPoint = localSorted[pa].point;
+        var anchorPoint = localSorted[0].point;
 
-
-      for (var ci = 0; ci < candidates.length; ci++) {
-        pb = candidates[ci].pbIndex;
-        outbound = 0;
-
-        a = paPoint;
-        b = this.sortedFanpoints[pb].point;
-        bearing = this.getBearing(a, b);
-        const distance = thisplugin.distanceTo(a, b);
-
-        // ghi#23 (link flip): manual direction override, for a mesh link or a portal's own anchor
-        // link (pb === 0) alike — the anchor case is handled below via the same SBUL capacity
-        // check as radiating mode.
-        var flipped = thisplugin.isLinkFlipped(this.sortedFanpoints[pa].guid, this.sortedFanpoints[pb].guid);
-
-        if (pb === 0) {
-          var maxLinks = 8 + thisplugin.availableSBUL * 8;
-          var wantOutbound = (thisplugin.stardirection === thisplugin.starDirENUM.RADIATING) || flipped;
-          if (wantOutbound && centerOutgoings < maxLinks) {
-            outbound = 1;
+        var candidates = [];
+        for (pb = 0; pb < pa; pb++) {
+          var candPoint = localSorted[pb].point;
+          var metric;
+          if (pb === 0) {
+            metric = Infinity;
           } else {
-            thisplugin.centerKeys++;
+            metric = thisplugin.distanceTo(newPoint, candPoint);
+            metric += thisplugin.distanceTo(anchorPoint, candPoint);
           }
-
-          if (outbound === 1) {
-            a = this.sortedFanpoints[pb].point;
-            b = this.sortedFanpoints[pa].point;
-            // console.log("outbound");
-            centerOutgoings++;
-          }
-        } else if (flipped) {
-          a = this.sortedFanpoints[pb].point;
-          b = paPoint;
+          candidates.push({
+            pbIndex: pb,
+            isAnchor: (pb === 0),
+            metric: metric
+          });
         }
 
-        // The actual direction was swapped either by anchor-link capacity (outbound) or by a
-        // mesh-link flip — never by `flipped` alone for pb === 0, since capacity may have
-        // refused the swap above and fallen back to the default direction.
-        var swapped = (pb === 0) ? (outbound === 1) : flipped;
+        candidates.sort(function (u, v) {
+          return v.metric - u.metric;
+        });
 
-        possibleline = {
-          a: a,
-          b: b,
-          guidA: swapped ? this.sortedFanpoints[pb].guid : this.sortedFanpoints[pa].guid,
-          guidB: swapped ? this.sortedFanpoints[pa].guid : this.sortedFanpoints[pb].guid,
-          bearing: bearing,
-          isJetLink: false,
-          isFanLink: (pb === 0),
-          creatingFieldsWith: [],
-          distance: distance
-        };
-        intersection = 0;
-        maplinks = maplinksAll;
+        var paFp = localSorted[pa];
+        var paPoint = paFp.point;
 
-        // "Respect Intel" stuff: block crossing a currently visible link from a respected
-        // faction. A candidate that exactly coincides with such a link (rather than crossing
-        // it) is left alone here — intersects() treats shared endpoints as "not crossing" — so
-        // it's handled like any other candidate: counted, drawn, and left to the separate
-        // "Grey out done links" Task List option to grey out.
-        if (thisplugin.isRespectingIntel()) {
-          for (i in maplinks) {
-            if (this.intersects(possibleline, maplinks[i])) {
-              intersection++;
-              if (possibleline.isFanLink && outbound === 1) centerOutgoings--;
-              break;
+        for (var ci = 0; ci < candidates.length; ci++) {
+          pb = candidates[ci].pbIndex;
+          outbound = 0;
+
+          a = paPoint;
+          b = localSorted[pb].point;
+          bearing = thisplugin.getBearing(a, b);
+          distance = thisplugin.distanceTo(a, b);
+
+          // ghi#23 (link flip): manual direction override, for a mesh link or a portal's own anchor
+          // link (pb === 0) alike — the anchor case is handled below via the same SBUL capacity
+          // check as radiating mode.
+          flipped = thisplugin.isLinkFlipped(localSorted[pa].guid, localSorted[pb].guid);
+
+          if (pb === 0) {
+            maxLinks = 8 + thisplugin.availableSBUL * 8;
+            wantOutbound = (thisplugin.stardirection === thisplugin.starDirENUM.RADIATING) || flipped;
+            if (wantOutbound && localCenterOutgoings < maxLinks) {
+              outbound = 1;
+            } else {
+              localCenterKeys++;
+            }
+
+            if (outbound === 1) {
+              a = localSorted[pb].point;
+              b = localSorted[pa].point;
+              localCenterOutgoings++;
+            }
+          } else if (flipped) {
+            a = localSorted[pb].point;
+            b = paPoint;
+          }
+
+          // The actual direction was swapped either by anchor-link capacity (outbound) or by a
+          // mesh-link flip — never by `flipped` alone for pb === 0, since capacity may have
+          // refused the swap above and fallen back to the default direction.
+          swapped = (pb === 0) ? (outbound === 1) : flipped;
+
+          possibleline = {
+            a: a,
+            b: b,
+            guidA: swapped ? localSorted[pb].guid : localSorted[pa].guid,
+            guidB: swapped ? localSorted[pa].guid : localSorted[pb].guid,
+            bearing: bearing,
+            isJetLink: false,
+            isFanLink: (pb === 0),
+            creatingFieldsWith: [],
+            distance: distance
+          };
+          intersection = 0;
+
+          // "Respect Intel" stuff: block crossing a currently visible link from a respected
+          // faction. A candidate that exactly coincides with such a link (rather than crossing
+          // it) is left alone here — intersects() treats shared endpoints as "not crossing" — so
+          // it's handled like any other candidate: counted, drawn, and left to the separate
+          // "Grey out done links" Task List option to grey out.
+          if (thisplugin.isRespectingIntel()) {
+            for (i in maplinksAll) {
+              if (thisplugin.intersects(possibleline, maplinksAll[i])) {
+                intersection++;
+                if (possibleline.isFanLink && outbound === 1) localCenterOutgoings--;
+                break;
+              }
             }
           }
-        }
-        if (intersection === 0) {
-          for (i in donelinks) {
-            if (this.intersects(possibleline, donelinks[i])) {
-              intersection++;
-              if (possibleline.isFanLink && outbound === 1) centerOutgoings--;
-              break;
+          if (intersection === 0) {
+            for (i in localDonelinks) {
+              if (thisplugin.intersects(possibleline, localDonelinks[i])) {
+                intersection++;
+                if (possibleline.isFanLink && outbound === 1) localCenterOutgoings--;
+                break;
+              }
             }
           }
-        }
-        if (intersection === 0) {
-          for (i in fanlinks) {
-            if (this.intersects(possibleline, fanlinks[i])) {
-              intersection++;
-              if (possibleline.isFanLink && outbound === 1) centerOutgoings--;
-              break;
+          if (intersection === 0) {
+            for (i in localFanlinks) {
+              if (thisplugin.intersects(possibleline, localFanlinks[i])) {
+                intersection++;
+                if (possibleline.isFanLink && outbound === 1) localCenterOutgoings--;
+                break;
+              }
             }
           }
-        }
 
-        if (centerOutgoings > 8 && centerOutgoings < maxLinks) {
-          // count sbul
-          centerSbul = Math.ceil((centerOutgoings - 8) / 8);
-        }
-
-        if (intersection === 0) {
-          //console.log("FANPOINTS: " + pa + " - "+pb+" bearing: " + bearing + "° " + this.bearingWord(bearing));
-          // Check if Link is a jetlink and add second field
-          var thirds = thisplugin.getThirds2(donelinks, [], possibleline.a, possibleline.b);
-
-          if (thirds.length === 2) {
-            possibleline.isJetLink = true;
+          if (localCenterOutgoings > 8 && localCenterOutgoings < maxLinks) {
+            // count sbul
+            localCenterSbul = Math.ceil((localCenterOutgoings - 8) / 8);
           }
 
-          possibleline.creatingFieldsWith = thirds;
+          if (intersection === 0) {
+            // Check if Link is a jetlink and add second field
+            var thirds = thisplugin.getThirds2(localDonelinks, [], possibleline.a, possibleline.b);
 
-          let field = {}
-          for (var t in thirds) {
-            field = {
-              a: thirds[t],
-              b: possibleline.a,
-              c: possibleline.b
+            if (thirds.length === 2) {
+              possibleline.isJetLink = true;
             }
-            triangles.push(field);
-          }
 
-          donelinks.splice(donelinks.length - (this.sortedFanpoints.length - pa), 0, possibleline);
-          if (swapped) {
-            // pb is the source (anchor throwing out via capacity/flip, or a flipped mesh link).
-            this.sortedFanpoints[pb].outgoing.push(this.sortedFanpoints[pa]);
-            this.sortedFanpoints[pa].incoming.push(this.sortedFanpoints[pb]);
+            possibleline.creatingFieldsWith = thirds;
 
-            // Store per-link metadata (field creation) on the source portal.
-            // This avoids recomputing geometry during task list export.
-            this.sortedFanpoints[pb].outgoingMeta[this.sortedFanpoints[pa].guid] = {
-              creatingFieldsWith: possibleline.creatingFieldsWith
-            };
-          } else {
-            this.sortedFanpoints[pa].outgoing.push(this.sortedFanpoints[pb]);
-            this.sortedFanpoints[pb].incoming.push(this.sortedFanpoints[pa]);
+            for (var t in thirds) {
+              localTriangles.push({
+                a: thirds[t],
+                b: possibleline.a,
+                c: possibleline.b
+              });
+            }
 
-            this.sortedFanpoints[pa].outgoingMeta[this.sortedFanpoints[pb].guid] = {
-              creatingFieldsWith: possibleline.creatingFieldsWith
-            };
+            localDonelinks.splice(localDonelinks.length - (localSorted.length - pa), 0, possibleline);
+            if (swapped) {
+              // pb is the source (anchor throwing out via capacity/flip, or a flipped mesh link).
+              localSorted[pb].outgoing.push(localSorted[pa]);
+              localSorted[pa].incoming.push(localSorted[pb]);
+
+              // Store per-link metadata (field creation) on the source portal.
+              // This avoids recomputing geometry during task list export.
+              localSorted[pb].outgoingMeta[localSorted[pa].guid] = {
+                creatingFieldsWith: possibleline.creatingFieldsWith
+              };
+            } else {
+              localSorted[pa].outgoing.push(localSorted[pb]);
+              localSorted[pb].incoming.push(localSorted[pa]);
+
+              localSorted[pa].outgoingMeta[localSorted[pb].guid] = {
+                creatingFieldsWith: possibleline.creatingFieldsWith
+              };
+            }
           }
         }
       }
+
+      return {
+        startingpointGUID: candidateStartingpointGUID,
+        startingpoint: candidateStartingpoint,
+        sortedFanpoints: localSorted,
+        donelinks: localDonelinks,
+        triangles: localTriangles,
+        n: localN,
+        centerOutgoings: localCenterOutgoings,
+        centerSbul: localCenterSbul,
+        centerKeys: localCenterKeys
+      };
+    }
+
+    if (thisplugin.perimeterpoints.length !== 0) {
+      // Right after a brand new polygon just replaced the previous portal set (never on every
+      // recalculation — this tries every hull anchor in both directions, so it's
+      // comparatively expensive) — and only while unlocked, and only when no manual portal
+      // order is active (that already fixes anchor/order by hand) — pick whichever anchor and
+      // direction reuses the most links already thrown in-game for our own faction, so the
+      // freshly (re)calculated plan lines up with real progress instead of resetting to
+      // whatever anchor/direction happened to be selected before the polygon changed.
+      if (thisplugin._orientationSearchPending) {
+        thisplugin._orientationSearchPending = false;
+
+        if (!thisplugin.is_locked && !thisplugin.manualOrderGuids) {
+          var scoreOrientation = function (idx, cw) {
+            var candidate = buildFanPlan(idx, cw);
+            var score = 0;
+            candidate.donelinks.forEach(function (link) {
+              if (link.guidA && link.guidB && thisplugin.isLinkInGame(link.guidA, link.guidB)) score++;
+            });
+            return score;
+          };
+
+          var bestIndex = thisplugin.startingpointIndex;
+          var bestClockwise = thisplugin.is_clockwise;
+          var bestScore = scoreOrientation(bestIndex, bestClockwise);
+
+          for (var oi = 0; oi < thisplugin.perimeterpoints.length; oi++) {
+            [true, false].forEach(function (cw) {
+              if (oi === bestIndex && cw === bestClockwise) return;
+              var score = scoreOrientation(oi, cw);
+              if (score > bestScore) {
+                bestScore = score;
+                bestIndex = oi;
+                bestClockwise = cw;
+              }
+            });
+          }
+
+          thisplugin.startingpointIndex = bestIndex;
+          thisplugin.is_clockwise = bestClockwise;
+        }
+      }
+
+      var builtPlan = buildFanPlan(thisplugin.startingpointIndex, thisplugin.is_clockwise);
+      thisplugin.startingpointGUID = builtPlan.startingpointGUID;
+      thisplugin.startingpoint = builtPlan.startingpoint;
+      this.sortedFanpoints = builtPlan.sortedFanpoints;
+      donelinks = builtPlan.donelinks;
+      triangles = builtPlan.triangles;
+      n = builtPlan.n;
+      centerOutgoings = builtPlan.centerOutgoings;
+      centerSbul = builtPlan.centerSbul;
+      thisplugin.centerKeys = builtPlan.centerKeys;
     }
 
     $.each(donelinks, function (i, link) {
