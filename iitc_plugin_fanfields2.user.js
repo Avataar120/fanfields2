@@ -522,8 +522,7 @@ function wrapper(plugin_info) {
   // Manual per-link direction overrides (Task List "flip" button, and the "Fewer keys"
   // optimizer below).
   // Keyed by undirected link key (getUndirectedLinkKey) -> true.
-  // The Task List's own ↔ button only ever touches mesh links between fan points — the
-  // anchor's own fan/star links can't be flipped that way.
+  // Applies to mesh links between fan points as well as a portal's own anchor (fan/star) link.
   thisplugin.manualLinkFlips = {};
 
   // "Less walking" (DISTANCE mode): portals it relocated earlier in the walk, right next to
@@ -1157,11 +1156,10 @@ function wrapper(plugin_info) {
           }
           linkDetailText += '</td>';
 
-          // ghi#23 (link flip): swap this link's direction, in its own compact column. Anchor links are excluded (star/fan logic),
-          // as is a link already done in-game (nothing left to flip).
-          var isAnchorLink = (portal.guid === thisplugin.startingpointGUID) || (outPortal.guid === thisplugin.startingpointGUID);
+          // ghi#23 (link flip): swap this link's direction, in its own compact column. Excluded only
+          // for a link already done in-game (nothing left to flip) — anchor (fan/star) links are flippable too.
           linkDetailText += '<td>';
-          if (!isAnchorLink && !linkDone) {
+          if (!linkDone) {
             var isFlipped = thisplugin.isLinkFlipped(portal.guid, outPortal.guid);
             linkDetailText += '<button class="plugin_fanfields2_link_flip_btn' + (isFlipped ? ' plugin_fanfields2_link_flipped' : '') +
               '" data-guid-a="' + portal.guid + '" data-guid-b="' + outPortal.guid + '" title="' +
@@ -2707,11 +2705,11 @@ function wrapper(plugin_info) {
     return !!thisplugin.manualLinkFlips[thisplugin.getUndirectedLinkKey(guidA, guidB)];
   };
 
-  // Toggle the manual direction override for a mesh link (Task List "flip" button).
-  // Anchor links (fan/star links to the starting portal) are never flippable this way.
+  // Toggle the manual direction override for a link (Task List "flip" button). Works for both
+  // mesh links and a portal's own anchor (fan/star) link — for the latter, updateLayer() applies
+  // the override subject to the same SBUL outgoing-capacity check as radiating mode.
   thisplugin.toggleLinkFlip = function (guidA, guidB) {
     if (!guidA || !guidB) return;
-    if (guidA === thisplugin.startingpointGUID || guidB === thisplugin.startingpointGUID) return;
 
     var key = thisplugin.getUndirectedLinkKey(guidA, guidB);
     if (thisplugin.manualLinkFlips[key]) {
@@ -4079,10 +4077,9 @@ function wrapper(plugin_info) {
         bearing = this.getBearing(a, b);
         const distance = thisplugin.distanceTo(a, b);
 
-        // ghi#23 (link flip): manual direction override. Almost always a mesh link; a portal's
-        // own anchor link (pb === 0) can technically be flipped too, handled below via the same
-        // SBUL capacity check as radiating mode, though no automatic optimizer currently
-        // produces such a flip.
+        // ghi#23 (link flip): manual direction override, for a mesh link or a portal's own anchor
+        // link (pb === 0) alike — the anchor case is handled below via the same SBUL capacity
+        // check as radiating mode.
         var flipped = thisplugin.isLinkFlipped(this.sortedFanpoints[pa].guid, this.sortedFanpoints[pb].guid);
 
         if (pb === 0) {
