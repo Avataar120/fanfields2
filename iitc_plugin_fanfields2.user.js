@@ -42,6 +42,7 @@ function wrapper(plugin_info) {
         'NEW: Respect Intel now defaults to your own faction (ENL or RES) instead of NONE.',
         'FIX: Task List\'s Refresh/shift/OK buttons were unreachable on mobile once the list had enough portals to grow taller than the screen — the list now caps its height to the visible screen and scrolls its own content instead.',
         'NEW: After a new (or edited) polygon replaces the previous one, the plan now automatically searches for whichever starting portal and direction reuses the most links already thrown in-game for your faction, instead of keeping an arbitrary orientation. Skipped while Locked or when a manual portal order is active.',
+        'FIX: Task List\'s "Navigate with Google Maps" route no longer includes a portal with nothing left to do there.',
       ],
     },{
       version: '2.8.10',
@@ -1046,7 +1047,6 @@ function wrapper(plugin_info) {
       var latlng = map.unproject(portal.point, thisplugin.PROJECT_ZOOM);
       lat = Math.round(latlng.lat * 10000000) / 10000000
       lng = Math.round(latlng.lng * 10000000) / 10000000
-      gmnav += `${lat},${lng}/`;
       p = portal.portal;
       // window.portals[portal.guid];
 
@@ -1131,6 +1131,12 @@ function wrapper(plugin_info) {
       // checked in priority order. "Nothing" means it's fully wrapped up.
       var needsKeys = keysNeeded > 0 || (hasKeysPluginData && !hasEnoughKeys);
       var action = needsCapture ? 'Capture' : (remainingOutgoingCount > 0 ? 'Link' : (needsKeys ? 'Keys' : 'Nothing'));
+
+      // Google Maps route: skip a portal with nothing left to do here — no point stopping
+      // there again, and it only lengthens the route for everyone else on it.
+      if (action !== 'Nothing') {
+        gmnav += `${lat},${lng}/`;
+      }
 
       // A cell whose own number is already settled fades and strikes through on its own,
       // independently of what the portal's overall Action says.
