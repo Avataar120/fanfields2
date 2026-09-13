@@ -1021,12 +1021,37 @@ function wrapper(plugin_info) {
       let title = window.escapeHtmlSpecialChars(rawTitle);
       let uriTitle = encodeURIComponent(rawTitle);
 
-      // All of this portal's outgoing links already exist in-game (own faction)?
-      // If so, the whole portal row is "done": faded out and struck through.
-      let allOutgoingLinksDone = thisplugin.greyOutExistingLinks && portal.outgoing.length > 0 &&
-        portal.outgoing.every(function (outPortal) {
-          return thisplugin.isLinkInGame(portal.guid, outPortal.guid);
+      // Volatile Scout Controlled portal (ornament 'sc5_p'): scanning it awards 3 scout
+      // control points instead of 1 — worth flagging next to the name as a reminder to scan it.
+      let ornaments = (p !== undefined && p.options && p.options.data && p.options.data.ornaments) ? p.options.data.ornaments : [];
+      let isVolatileScoutPortal = ornaments.indexOf('sc5_p') !== -1;
+
+      // Is this portal already ours? If not (neutral, enemy faction, or Machina), it has
+      // to be captured before anything else here matters. A portal not yet loaded from
+      // the server (p undefined, or no team data) is treated the same as "not ours". Even
+      // when it's already ours, fewer than 8 resonators means it's not fully secured yet,
+      // so it still needs (re)capturing.
+      var ownTeam = thisplugin.getOwnFactionTeam();
+      var portalTeam = thisplugin.getPortalTeam(p);
+      var portalResCount = (p !== undefined && p.options && p.options.data) ? p.options.data.resCount : undefined;
+      var portalOwnedByUs = ownTeam !== undefined && portalTeam === ownTeam;
+      var portalFullyResonated = portalResCount !== undefined && portalResCount >= 8;
+      var needsCapture = !portalOwnedByUs || !portalFullyResonated;
+
+      // Outgoing links still to throw from here (already-made in-game links don't count,
+      // when "Grey out done links" is on). Drives both the Action and the Links cell fade.
+      var alreadyDoneOutgoingCount = 0;
+      if (thisplugin.greyOutExistingLinks && portal.outgoing.length > 0) {
+        portal.outgoing.forEach(function (outPortal) {
+          var outMeta = portal.outgoingMeta && portal.outgoingMeta[outPortal.guid];
+          var isInvalid = outMeta && outMeta.invalidUnderField;
+          if (!isInvalid && thisplugin.isLinkInGame(portal.guid, outPortal.guid)) {
+            alreadyDoneOutgoingCount++;
+          }
         });
+      }
+      var totalOutgoingCount = (portal.outgoingValidCount !== undefined) ? portal.outgoingValidCount : portal.outgoing.length;
+      var remainingOutgoingCount = totalOutgoingCount - alreadyDoneOutgoingCount;
 
       // Incoming links that already exist in-game don't need a key anymore: that key was
       // already spent to make the link. Subtract them from the portal's remaining key count.
@@ -1043,9 +1068,11 @@ function wrapper(plugin_info) {
 
       var keysNeeded = ((portal.incomingValidCount !== undefined) ? portal.incomingValidCount : portal.incoming.length) - alreadyLinkedIncomingCount;
 
-      let availableKeysText = '';
       let availableKeys = 0;
-      if (window.plugin.keys || window.plugin.LiveInventory) {
+      let hasKeysPluginData = !!(window.plugin.keys || window.plugin.LiveInventory);
+      let hasEnoughKeys = false;
+      let keyColorAttribute = '';
+      if (hasKeysPluginData) {
 
         if (window.plugin.LiveInventory) {
           if (window.plugin.LiveInventory.keyGuidCount) {
@@ -1059,26 +1086,29 @@ function wrapper(plugin_info) {
         }
         // Beware of bugs in the above code; I have only proved it correct, not tried it! (Donald Knuth)
 
-        let keyColorAttribute = '';
-        if (availableKeys >= keysNeeded) {
-          keyColorAttribute = 'plugin_fanfields2_enoughKeys';
-        } else {
-          keyColorAttribute = 'plugin_fanfields2_notEnoughKeys';
-        };
-
-        availableKeysText = keyColorAttribute + '>' + availableKeys + '/';
-      } else {
-        availableKeysText = '>';
+        hasEnoughKeys = availableKeys >= keysNeeded;
+        keyColorAttribute = hasEnoughKeys ? 'plugin_fanfields2_enoughKeys' : 'plugin_fanfields2_notEnoughKeys';
       };
+
+      // Action for this portal: the next thing standing in the way of finishing it here,
+      // checked in priority order. "Nothing" means it's fully wrapped up.
+      var needsKeys = keysNeeded > 0 || (hasKeysPluginData && !hasEnoughKeys);
+      var action = needsCapture ? 'Capture' : (remainingOutgoingCount > 0 ? 'Link' : (needsKeys ? 'Keys' : 'Nothing'));
+
+      // A cell whose own number is already settled fades and strikes through on its own,
+      // independently of what the portal's overall Action says.
+      var linksCellDone = remainingOutgoingCount === 0;
+      var keysCellDone = keysNeeded === 0 || (hasKeysPluginData && hasEnoughKeys);
+
       // "Less walking" relocated this portal earlier in the walk (see computeDistanceOrderFlips):
       // flag it so it's captured, with enough of its own keys gathered, ahead of schedule.
       let isRelocatedForLessWalking = !!(thisplugin.relocatedForLessWalkingGuids && thisplugin.relocatedForLessWalkingGuids[portal.guid]);
 
-      // Both classes can apply at once (a relocated portal whose links are all already
-      // thrown): "relocated" is declared after "done" in the stylesheet, so its green color
+      // Both classes can apply at once (a portal with nothing left to do that was also
+      // relocated): "relocated" is declared after "done" in the stylesheet, so its green color
       // wins over "done"'s faded yellow, while "done"'s strikethrough still applies.
       var portalRowClasses = [];
-      if (allOutgoingLinksDone) portalRowClasses.push('plugin_fanfields2_portal_done');
+      if (action === 'Nothing') portalRowClasses.push('plugin_fanfields2_portal_done');
       if (isRelocatedForLessWalking) portalRowClasses.push('plugin_fanfields2_portal_relocated');
       var portalRowClass = portalRowClasses.join(' ');
 
@@ -1092,7 +1122,7 @@ function wrapper(plugin_info) {
       // Action
 
       text += '<td>';
-      text += '  <label class="plugin_fanfields2_exportText_Label" for="plugin_fanfields2_exportText_' + portal.guid + '">Capture</label>';
+      text += '  <label class="plugin_fanfields2_exportText_Label" for="plugin_fanfields2_exportText_' + portal.guid + '">' + action + '</label>';
       text += '  <input type="checkbox" id="plugin_fanfields2_exportText_' + portal.guid + '" data-guid="' + portal.guid + '" plugin_fanfields2_exportText_toggle="toggle">';
       text += '</td>';
 
@@ -1103,6 +1133,10 @@ function wrapper(plugin_info) {
 
       text += '<td>';
       const gmapsHref = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&query_destination_id=(${uriTitle})`;
+
+      if (isVolatileScoutPortal) {
+        text += '<span class="plugin_fanfields2_volatile_icon" title="Volatile Scout Controlled portal: scanning it awards 3 scout control points instead of 1">&#128247;</span> ';
+      }
 
       // Two links are rendered:
       // - UI link: uses onclick to interact with IITC (flyToPortal)
@@ -1116,9 +1150,11 @@ function wrapper(plugin_info) {
       text += '</td>';
 
       // Keys
-      text += '<td ' + availableKeysText + keysNeeded + '</td>';
+      text += '<td' + (keyColorAttribute ? ' ' + keyColorAttribute : '') +
+        (keysCellDone ? ' class="plugin_fanfields2_cell_done"' : '') + '>' +
+        (hasKeysPluginData ? availableKeys + '/' : '') + keysNeeded + '</td>';
       // Links
-      text += '<td>' + ((portal.outgoingValidCount !== undefined) ? portal.outgoingValidCount : portal.outgoing.length) + '</td>';
+      text += '<td' + (linksCellDone ? ' class="plugin_fanfields2_cell_done"' : '') + '>' + totalOutgoingCount + '</td>';
 
       let fieldsCreatedAtThisPortal = 0
       if (portal.outgoing.length > 0) {
@@ -1278,6 +1314,13 @@ function wrapper(plugin_info) {
   thisplugin.wireTaskListHandlers = function () {
     var $inner = $('#plugin_fanfields2_exportText_inner');
 
+    // On mobile, tapping any text carrying a title attribute (warning icons, the camera
+    // icon, buttons, ...) pops up a native tooltip instead of just registering the tap —
+    // strip them there so touch stays a plain tap. Desktop keeps its hover tooltips.
+    if (L && L.Browser && L.Browser.mobile) {
+      $inner.find('[title]').removeAttr('title');
+    }
+
     $inner.find('[plugin_fanfields2_exportText_toggle="toggle"]')
       .each(function () {
         const $toggle = $(this);
@@ -1432,7 +1475,8 @@ function wrapper(plugin_info) {
           tr.plugin_fanfields2_link_done,
           tr.plugin_fanfields2_link_done td,
           tr.plugin_fanfields2_link_done a,
-          tr.plugin_fanfields2_link_done span {
+          tr.plugin_fanfields2_link_done span,
+          td.plugin_fanfields2_cell_done {
             color: #828284 !important;
             text-decoration: line-through !important;
           }
@@ -1817,6 +1861,35 @@ function wrapper(plugin_info) {
     return undefined;
   };
 
+  // A portal marker's own team (p.options.data.team) is the raw string IITC got from the
+  // server ('RESISTANCE'/'E'/...), NOT the numeric TEAM_NONE/TEAM_RES/TEAM_ENL/TEAM_MAC
+  // constant used everywhere else (including getOwnFactionTeam() above and link.team) —
+  // comparing it directly against those constants always fails. This resolves it the same
+  // way IITC itself does internally (IITC.utils.getTeamId, aliased as window.teamStringToId
+  // for plugins), with a manual fallback for older/other builds lacking both.
+  thisplugin.getPortalTeam = function (p) {
+    if (p === undefined || !p.options || !p.options.data || p.options.data.team === undefined) return undefined;
+
+    var teamRaw = p.options.data.team;
+    if (typeof teamRaw === 'number') return teamRaw;
+
+    if (typeof window.teamStringToId === 'function') return window.teamStringToId(teamRaw);
+    if (window.IITC && window.IITC.utils && typeof window.IITC.utils.getTeamId === 'function') {
+      return window.IITC.utils.getTeamId(teamRaw);
+    }
+
+    if (window.TEAM_CODENAMES) {
+      var codenameIdx = window.TEAM_CODENAMES.indexOf(teamRaw);
+      if (codenameIdx !== -1) return codenameIdx;
+    }
+    if (window.TEAM_CODES) {
+      var codeIdx = window.TEAM_CODES.indexOf(teamRaw);
+      if (codeIdx !== -1) return codeIdx;
+    }
+
+    return window.TEAM_NONE;
+  };
+
   thisplugin.isOwnFactionRespected = function () {
     var ownTeam = thisplugin.getOwnFactionTeam();
     if (ownTeam === undefined) return false;
@@ -2166,6 +2239,14 @@ function wrapper(plugin_info) {
       '  color: #ffce00;\n' +
       '}\n');
 
+    // Task List: camera icon flagging a Volatile Scout Controlled portal (worth 3 scout
+    // control points to scan instead of 1).
+    addCSS('\n' +
+      '.plugin_fanfields2_volatile_icon {\n' +
+      '  font-size: 12px;\n' +
+      '  vertical-align: middle;\n' +
+      '}\n');
+
     //plugin_fanfields2_exportText_LinkDetails
     addCSS('\n' +
       '.plugin_fanfields2_exportText_LinkDetails tr td {\n' +
@@ -2216,13 +2297,24 @@ function wrapper(plugin_info) {
       '}\n'
     );
 
-    // Task List: once all of a portal's links exist in-game, the whole portal
-    // line fades from bright to pale yellow and is struck through, end to end.
+    // Task List: once a portal's Action is "Nothing" (owned, no outgoing links left, no
+    // keys still needed), the whole portal line fades from bright to pale yellow and is
+    // struck through, end to end.
     addCSS('\n' +
       'tr.plugin_fanfields2_portal_done,\n' +
       'tr.plugin_fanfields2_portal_done td,\n' +
       'tr.plugin_fanfields2_portal_done a,\n' +
       'tr.plugin_fanfields2_portal_done span {\n' +
+      '  color: rgba(255, 206, 0, 0.35) !important;\n' +
+      '  text-decoration: line-through !important;\n' +
+      '}\n'
+    );
+
+    // Task List: the Links or Keys cell fades and strikes through on its own — independently
+    // of the row's overall Action — once that cell's own count is settled (no outgoing links
+    // left, or no incoming links left / enough keys already held).
+    addCSS('\n' +
+      'td.plugin_fanfields2_cell_done {\n' +
       '  color: rgba(255, 206, 0, 0.35) !important;\n' +
       '  text-decoration: line-through !important;\n' +
       '}\n'
