@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.10.20260913
+// @version         2.8.11.20260913
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-13-190000';
+  plugin_info.dateTimeVersion = '2026-09-13-200000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,12 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.11',
+      changes: [
+        'FIX: Respect Intel now only blocks crossing the selected factions\' links, even when your own faction is included — it no longer changes anything else about how already-existing links are handled or displayed.',
+        'FIX: Task List\'s Links column now shows how many outgoing links are still left to throw from a portal, instead of its total outgoing link count.',
+      ],
+    },{
       version: '2.8.10',
       changes: [
         'NEW: Added a Task List button to the map\'s top-left corner, next to the anchor rotation buttons, so the list can be opened directly from there.',
@@ -775,8 +781,7 @@ function wrapper(plugin_info) {
         '<p><b>Avoid blockers</b><br>' +
         'If you need to plan around links you cannot or do not want to destroy, use <i>Respect&nbsp;Intel</i>. ' +
         'Choose which factions\' links are treated as blockers (NONE / ALL / ENL / RES / ENL &amp; MAC / RES &amp; MAC / MAC). ' +
-        'The plan avoids crossing those currently visible intel links. When the selected mode includes your own faction, existing visible links from your own faction, ' +
-        'with both portals inside the selected area, are integrated as already-built links for field planning.</p>' +
+        'The plan avoids crossing those currently visible intel links — nothing else changes, even when the selected mode includes your own faction.</p>' +
 
         '<p><b>Order & route planning</b><br>' +
         'Switch between <i>Clockwise</i> and <i>Counterclockwise</i> order to find an easier route or squeeze out extra fields. ' +
@@ -1011,7 +1016,7 @@ function wrapper(plugin_info) {
     } else {
       text += '<th>Keys</th>';
     }
-    text += '<th>Links</th>';
+    text += '<th title="still to throw">Links</th>';
     text += '<th>Fields</th>';
 
     text += '</tr></thead><tbody>';
@@ -1171,8 +1176,13 @@ function wrapper(plugin_info) {
       text += '<td' + (keyColorAttribute ? ' ' + keyColorAttribute : '') +
         (keysCellDone ? ' class="plugin_fanfields2_cell_done"' : '') + '>' +
         (hasKeysPluginData ? availableKeys + '/' : '') + keysNeeded + '</td>';
-      // Links
-      text += '<td' + (linksCellDone ? ' class="plugin_fanfields2_cell_done"' : '') + '>' + totalOutgoingCount + '</td>';
+      // Links: how many outgoing links are still left to throw from here, not the portal's
+      // total outgoing count — mirrors the Keys column, which already shows keys still needed
+      // rather than the total incoming count.
+      var linksTitle = (remainingOutgoingCount !== totalOutgoingCount)
+        ? ' title="' + remainingOutgoingCount + ' still to throw, out of ' + totalOutgoingCount + ' total"'
+        : '';
+      text += '<td' + linksTitle + (linksCellDone ? ' class="plugin_fanfields2_cell_done"' : '') + '>' + remainingOutgoingCount + '</td>';
 
       let fieldsCreatedAtThisPortal = 0
       if (portal.outgoing.length > 0) {
@@ -1960,14 +1970,6 @@ function wrapper(plugin_info) {
     return window.TEAM_NONE;
   };
 
-  thisplugin.isOwnFactionRespected = function () {
-    var ownTeam = thisplugin.getOwnFactionTeam();
-    if (ownTeam === undefined) return false;
-
-    return thisplugin.getRespectIntelTeams()
-      .indexOf(ownTeam) !== -1;
-  };
-
   thisplugin.getRespectIntelLabel = function () {
     switch (thisplugin.respectIntelLinksMode) {
       case thisplugin.respectIntelLinksModeENUM.ALL:
@@ -2626,20 +2628,6 @@ function wrapper(plugin_info) {
 
 
 
-  thisplugin.linkExists = function (list, link) {
-    var i, result = false;
-    for (i in list) {
-      //if ((list[i].a === link.a && list[i].b === link.b) || (list[i].a === link.b && list[i].b === link.a))
-      if (thisplugin.linksEqual(list[i], link)) {
-        result = true;
-        break;
-      }
-    }
-    return result;
-  };
-
-
-
   thisplugin.linksEqual = function (link1, link2) {
     var Aa, Ab, Ba, Bb;
     Aa = link1.a.equals(link2.a);
@@ -2865,7 +2853,6 @@ function wrapper(plugin_info) {
   thisplugin.validTriangles = null;
   thisplugin.validLinkCount = 0;
   thisplugin.validTriangleCount = 0;
-  thisplugin.existingIntelPlanLinks = [];
 
   thisplugin.pointKey = function (p) {
     return p.x + ',' + p.y;
@@ -3028,15 +3015,6 @@ function wrapper(plugin_info) {
 
     // Track successful links (undirected) so we can decide which triangles can actually be formed.
     var builtLinks = {};
-    var existingIntelPlanLinks = thisplugin.existingIntelPlanLinks || [];
-    for (var ei = 0; ei < existingIntelPlanLinks.length; ei++) {
-      var existingLink = existingIntelPlanLinks[ei];
-      var existingGuidA = existingLink.guidA || pointToGuid[thisplugin.pointKey(existingLink.a)];
-      var existingGuidB = existingLink.guidB || pointToGuid[thisplugin.pointKey(existingLink.b)];
-      if (existingGuidA && existingGuidB) {
-        builtLinks[thisplugin.getUndirectedLinkKey(existingGuidA, existingGuidB)] = true;
-      }
-    }
 
     // Track whether a portal is under a field at the moment we arrive there.
     var portalUnderFieldAtVisit = {};
@@ -3265,9 +3243,6 @@ function wrapper(plugin_info) {
     });
 
     var builtLinks = {};
-    (thisplugin.existingIntelPlanLinks || []).forEach(function (link) {
-      if (link.guidA && link.guidB) builtLinks[thisplugin.getUndirectedLinkKey(link.guidA, link.guidB)] = true;
-    });
 
     var validTriangles = [];
     var invalidCount = 0;
@@ -3730,7 +3705,6 @@ function wrapper(plugin_info) {
     thisplugin.startingMarker = undefined;
     thisplugin.startingMarkerGUID = undefined;
     thisplugin.centerKeys = 0;
-    thisplugin.existingIntelPlanLinks = [];
 
 
 
@@ -3929,39 +3903,6 @@ function wrapper(plugin_info) {
 
     // Store signature for the next run
     thisplugin.lastPlanSignature = currentSignature;
-
-    thisplugin.existingIntelPlanLinks = [];
-    if (thisplugin.isOwnFactionRespected()) {
-      var ownTeam = thisplugin.getOwnFactionTeam();
-      var fanpointGuidByPoint = {};
-      for (guid in this.fanpoints) {
-        fanpointGuidByPoint[thisplugin.pointKey(this.fanpoints[guid])] = guid;
-      }
-
-      if (ownTeam !== undefined) {
-        thisplugin.existingIntelPlanLinks = Object.values(thisplugin.intelLinks)
-          .filter(function (link) {
-            var guidA = fanpointGuidByPoint[thisplugin.pointKey(link.a)];
-            var guidB = fanpointGuidByPoint[thisplugin.pointKey(link.b)];
-            return link.team === ownTeam && guidA && guidB;
-          })
-          .map(function (link) {
-            var guidA = fanpointGuidByPoint[thisplugin.pointKey(link.a)];
-            var guidB = fanpointGuidByPoint[thisplugin.pointKey(link.b)];
-            return {
-              a: link.a,
-              b: link.b,
-              team: link.team,
-              guidA: guidA,
-              guidB: guidB,
-              isExistingIntelLink: true,
-              counts: false
-            };
-          });
-      }
-    }
-
-
 
     // Find convex hull from fanpoints list of points
     // Returns array : [guid, [x,y],.....]
@@ -4296,29 +4237,22 @@ function wrapper(plugin_info) {
           isJetLink: false,
           isFanLink: (pb === 0),
           creatingFieldsWith: [],
-          counts: true,
           distance: distance
         };
         intersection = 0;
         maplinks = maplinksAll;
 
-        // "Respect Intel" stuff
+        // "Respect Intel" stuff: block crossing a currently visible link from a respected
+        // faction. A candidate that exactly coincides with such a link (rather than crossing
+        // it) is left alone here — intersects() treats shared endpoints as "not crossing" — so
+        // it's handled like any other candidate: counted, drawn, and left to the separate
+        // "Grey out done links" Task List option to grey out.
         if (thisplugin.isRespectingIntel()) {
           for (i in maplinks) {
             if (this.intersects(possibleline, maplinks[i])) {
               intersection++;
               if (possibleline.isFanLink && outbound === 1) centerOutgoings--;
               break;
-            }
-          }
-          var existsAsBlockingIntelLink = this.linkExists(maplinks, possibleline);
-          var existsAsOwnIntelLink = this.linkExists(thisplugin.existingIntelPlanLinks, possibleline);
-          if (intersection === 0 && (existsAsBlockingIntelLink || existsAsOwnIntelLink)) {
-            possibleline.counts = false;
-            if (possibleline.isFanLink && outbound === 1) {
-              centerOutgoings--;
-            } else if (possibleline.isFanLink) {
-              thisplugin.centerKeys--;
             }
           }
         }
@@ -4349,15 +4283,7 @@ function wrapper(plugin_info) {
         if (intersection === 0) {
           //console.log("FANPOINTS: " + pa + " - "+pb+" bearing: " + bearing + "° " + this.bearingWord(bearing));
           // Check if Link is a jetlink and add second field
-          var thirds = [];
-          if (thisplugin.isRespectingIntel()) {
-            if (possibleline.counts) {
-              thirds = thisplugin.getThirds2(donelinks, thisplugin.existingIntelPlanLinks, possibleline.a, possibleline.b);
-            }
-          } else {
-            // thirds = this.getThirds(donelinks, possibleline.a, possibleline.b);
-            thirds = thisplugin.getThirds2(donelinks, [], possibleline.a, possibleline.b);
-          }
+          var thirds = thisplugin.getThirds2(donelinks, [], possibleline.a, possibleline.b);
 
           if (thirds.length === 2) {
             possibleline.isJetLink = true;
@@ -4375,31 +4301,25 @@ function wrapper(plugin_info) {
             triangles.push(field);
           }
 
-          if (possibleline.counts) {
-            donelinks.splice(donelinks.length - (this.sortedFanpoints.length - pa), 0, possibleline);
-            if (swapped) {
-              // pb is the source (anchor throwing out via capacity/flip, or a flipped mesh link).
-              this.sortedFanpoints[pb].outgoing.push(this.sortedFanpoints[pa]);
-              this.sortedFanpoints[pa].incoming.push(this.sortedFanpoints[pb]);
+          donelinks.splice(donelinks.length - (this.sortedFanpoints.length - pa), 0, possibleline);
+          if (swapped) {
+            // pb is the source (anchor throwing out via capacity/flip, or a flipped mesh link).
+            this.sortedFanpoints[pb].outgoing.push(this.sortedFanpoints[pa]);
+            this.sortedFanpoints[pa].incoming.push(this.sortedFanpoints[pb]);
 
-              // Store per-link metadata (field creation) on the source portal.
-              // This avoids recomputing geometry during task list export.
-              this.sortedFanpoints[pb].outgoingMeta[this.sortedFanpoints[pa].guid] = {
-                creatingFieldsWith: possibleline.creatingFieldsWith
-              };
-            } else {
-              this.sortedFanpoints[pa].outgoing.push(this.sortedFanpoints[pb]);
-              this.sortedFanpoints[pb].incoming.push(this.sortedFanpoints[pa]);
+            // Store per-link metadata (field creation) on the source portal.
+            // This avoids recomputing geometry during task list export.
+            this.sortedFanpoints[pb].outgoingMeta[this.sortedFanpoints[pa].guid] = {
+              creatingFieldsWith: possibleline.creatingFieldsWith
+            };
+          } else {
+            this.sortedFanpoints[pa].outgoing.push(this.sortedFanpoints[pb]);
+            this.sortedFanpoints[pb].incoming.push(this.sortedFanpoints[pa]);
 
-              this.sortedFanpoints[pa].outgoingMeta[this.sortedFanpoints[pb].guid] = {
-                creatingFieldsWith: possibleline.creatingFieldsWith
-              };
-            }
-
-
-
+            this.sortedFanpoints[pa].outgoingMeta[this.sortedFanpoints[pb].guid] = {
+              creatingFieldsWith: possibleline.creatingFieldsWith
+            };
           }
-
         }
       }
     }
