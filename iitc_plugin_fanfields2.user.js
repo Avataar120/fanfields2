@@ -2687,6 +2687,12 @@ function wrapper(plugin_info) {
                 font-size: 12px;
                 letter-spacing: 1px;
                 user-select: none;
+                ${L.Browser.mobile ? `
+                max-width: 40px !important;
+                white-space: normal !important;
+                word-break: break-all !important;
+                overflow-wrap: break-word !important;
+                ` : ''}
               }
             `);
 
