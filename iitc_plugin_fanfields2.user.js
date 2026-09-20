@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.12.20260920
+// @version         2.8.13.20260920
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-20-120000';
+  plugin_info.dateTimeVersion = '2026-09-20-183400';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,11 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.13',
+      changes: [
+        'NEW: On mobile, tapping a portal name in the Task List now centers the map on that portal, highlights it and closes the list. Desktop is unchanged: the map is centered, the portal details open and the list stays open.',
+      ],
+    },{
       version: '2.8.12',
       changes: [
         'NEW: Task List\'s Keys column now includes a quick-set button next to the count (Keys plugin only): mark a portal as having enough keys with one tap, or reset that portal back to 0 once marked.',
