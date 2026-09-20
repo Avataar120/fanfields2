@@ -38,7 +38,7 @@ function wrapper(plugin_info) {
         'NEW: On mobile, tapping a portal name in the Task List now centers the map on that portal, highlights it and closes the list. Desktop is unchanged: the map is centered, the portal details open and the list stays open.',
         'NEW: Task List\'s Fields cell now fades and strikes through, like the Links cell, once no outgoing link is left to throw from that portal.',
         'FIX: Task List\'s Action column no longer stays on "Keys" for a portal once the keys you hold (Keys or LiveInventory plugin) cover what it needs — it now shows "Nothing".',
-        'FIX: On mobile, "Navigate with Google Maps" now only sends the next 10 stops still to do instead of the whole route, since a longer route could crash the Google Maps app.',
+        'FIX: On mobile, "Navigate with Google Maps" now only sends the next 20 stops still to do instead of the whole route, since a longer route could crash the Google Maps app.',
       ],
     },{
       version: '2.8.12',
@@ -533,10 +533,9 @@ function wrapper(plugin_info) {
   // zoom level used for projecting points between latLng and pixel coordinates. may affect precision of triangulation
   thisplugin.PROJECT_ZOOM = 16;
 
-  // Most stops (origin included) handed to Google Maps on mobile: the Google Maps app itself
-  // caps a route at 10 stops, and a longer one can make the app misbehave or crash when opened
-  // from the "Navigate with Google Maps" link.
-  thisplugin.GOOGLE_MAPS_MAX_STOPS_MOBILE = 10;
+  // Most stops (origin included) handed to Google Maps on mobile: a longer route can make the
+  // Google Maps app misbehave or crash when opened from the "Navigate with Google Maps" link.
+  thisplugin.GOOGLE_MAPS_MAX_STOPS_MOBILE = 20;
 
   thisplugin.LABEL_WIDTH = 100;
   thisplugin.LABEL_HEIGHT = 49;
