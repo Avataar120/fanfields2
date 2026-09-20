@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.11.20260913
+// @version         2.8.12.20260920
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-13-200000';
+  plugin_info.dateTimeVersion = '2026-09-20-120000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,11 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.12',
+      changes: [
+        'NEW: Task List\'s Keys column now includes a quick-set button next to the count (Keys plugin only): mark a portal as having enough keys with one tap, or reset that portal back to 0 once marked.',
+      ],
+    },{
       version: '2.8.11',
       changes: [
         'FIX: Respect Intel now only blocks crossing the selected factions\' links, even when your own faction is included — it no longer changes anything else about how already-existing links are handled or displayed.',
@@ -1024,7 +1029,7 @@ function wrapper(plugin_info) {
     text += '<th style="width:20px;"></th>';
     text += '<th style="text-align:left">Portal Name</th>';
     if (window.plugin.keys || window.plugin.LiveInventory) {
-      text += '<th title="own/need">'
+      text += '<th title="own/need" style="min-width:80px;">'
         + '<span class="plugin_fanfields2_exportText_print">Keys (owned/needed)</span>'
         + '<span class="plugin_fanfields2_exportText_ui">Keys</span>'
         + '</th>';
@@ -1127,6 +1132,25 @@ function wrapper(plugin_info) {
         keyColorAttribute = hasEnoughKeys ? 'plugin_fanfields2_enoughKeys' : 'plugin_fanfields2_notEnoughKeys';
       };
 
+      // Keys plugin quick-set button: only for the actual "keys" plugin (its count can be
+      // written to), never for LiveInventory (a read-only reflection of the real inventory).
+      // Green check = click to mark "enough keys" (raises the keys plugin count to at least
+      // keysNeeded). Red cross = already marked enough; click to reset that portal back to 0.
+      // Its own state always reflects the keys plugin's own count for this portal, even when
+      // LiveInventory is also installed and takes priority for the Keys column's own number.
+      var keysSetButtonHtml = '';
+      if (window.plugin.keys && keysNeeded > 0) {
+        var ownKeysPluginCount = window.plugin.keys.keys[portal.guid] || 0;
+        var hasEnoughKeysPluginOwn = ownKeysPluginCount >= keysNeeded;
+        keysSetButtonHtml = ' <button type="button" class="plugin_fanfields2_keys_setbtn' +
+          (hasEnoughKeysPluginOwn ? ' plugin_fanfields2_keys_full' : '') + '" data-guid="' + portal.guid + '"' +
+          ' data-needed="' + keysNeeded + '"' +
+          ' title="' + (hasEnoughKeysPluginOwn
+            ? 'Reset keys plugin count to 0 for this portal'
+            : 'Mark as enough keys (sets keys plugin count to at least ' + keysNeeded + ' for this portal)') +
+          '">&#128273;</button>';
+      }
+
       // Action for this portal: the next thing standing in the way of finishing it here,
       // checked in priority order. "Nothing" means it's fully wrapped up.
       var needsKeys = keysNeeded > 0 || (hasKeysPluginData && !hasEnoughKeys);
@@ -1194,8 +1218,9 @@ function wrapper(plugin_info) {
 
       // Keys
       text += '<td' + (keyColorAttribute ? ' ' + keyColorAttribute : '') +
-        (keysCellDone ? ' class="plugin_fanfields2_cell_done"' : '') + '>' +
-        (hasKeysPluginData ? availableKeys + '/' : '') + keysNeeded + '</td>';
+        (keysCellDone ? ' class="plugin_fanfields2_cell_done"' : '') +
+        (keysSetButtonHtml ? ' style="white-space:nowrap;"' : '') + '>' +
+        (hasKeysPluginData ? availableKeys + '/' : '') + keysNeeded + keysSetButtonHtml + '</td>';
       // Links: how many outgoing links are still left to throw from here, not the portal's
       // total outgoing count — mirrors the Keys column, which already shows keys still needed
       // rather than the total incoming count.
@@ -1411,6 +1436,18 @@ function wrapper(plugin_info) {
       .off('click')
       .on('click', function () {
         thisplugin.resetLinkFlips();
+        thisplugin.refreshTaskListDialog();
+      });
+
+    // Keys plugin quick-set button: mark "enough keys" (raises the keys plugin count to at
+    // least what this portal needs) or, once marked, reset it back to 0.
+    $inner
+      .off('click.plugin_fanfields2_keys_set')
+      .on('click.plugin_fanfields2_keys_set', '.plugin_fanfields2_keys_setbtn', function (ev) {
+        ev.preventDefault();
+        var guid = $(this).attr('data-guid');
+        var needed = parseInt($(this).attr('data-needed'), 10) || 0;
+        thisplugin.toggleKeysPluginCount(guid, needed);
         thisplugin.refreshTaskListDialog();
       });
 
@@ -2427,6 +2464,50 @@ function wrapper(plugin_info) {
       '}\n'
     );
 
+    // Task List: "keys" plugin quick-set button. A green check above the key means "not
+    // enough keys yet — click to mark this portal as having enough"; a red cross means
+    // "already marked — click to reset the keys plugin's count for this portal back to 0".
+    // Sits inline right after the keys count, so it's kept small and non-wrapping, with
+    // every box-model property forced (!important) to override the site's own generic
+    // button styling (border/background/padding), which otherwise renders it as a full-size
+    // button and pushes it onto its own line.
+    addCSS('\n' +
+      '.plugin_fanfields2_keys_setbtn {\n' +
+      '  position: relative;\n' +
+      '  display: inline-block !important;\n' +
+      '  box-sizing: content-box !important;\n' +
+      '  width: 12px !important;\n' +
+      '  height: 12px !important;\n' +
+      '  min-width: 0 !important;\n' +
+      '  line-height: 12px !important;\n' +
+      '  padding: 0 !important;\n' +
+      '  margin: 0 0 0 4px !important;\n' +
+      '  border: none !important;\n' +
+      '  border-radius: 0 !important;\n' +
+      '  background: transparent !important;\n' +
+      '  box-shadow: none !important;\n' +
+      '  overflow: visible !important;\n' +
+      '  font-size: 10px !important;\n' +
+      '  vertical-align: middle;\n' +
+      '  cursor: pointer;\n' +
+      '}\n' +
+      '.plugin_fanfields2_keys_setbtn::after {\n' +
+      '  content: "\\2713";\n' +
+      '  position: absolute;\n' +
+      '  top: -2px;\n' +
+      '  right: -9px;\n' +
+      '  font-size: 15px;\n' +
+      '  font-weight: bold;\n' +
+      '  line-height: 1;\n' +
+      '  color: #4CAF50;\n' +
+      '  text-shadow: -1px 0 #000, 0 1px #000, 1px 0 #000, 0 -1px #000;\n' +
+      '}\n' +
+      '.plugin_fanfields2_keys_setbtn.plugin_fanfields2_keys_full::after {\n' +
+      '  content: "\\2715";\n' +
+      '  color: #ff4444;\n' +
+      '}\n'
+    );
+
     // Task List dialog: anchor shift (rotation) buttons, added to the left of the dialog's
     // own OK button so the plan's start portal can be cycled without leaving the list.
     addCSS('\n' +
@@ -2958,6 +3039,20 @@ function wrapper(plugin_info) {
     thisplugin.linkOrderMode = thisplugin.linkOrderModeENUM.ALGO;
     thisplugin.updateLinkOrderModeButton();
     thisplugin.updateLayer();
+  };
+
+  // Task List "keys" quick-set button: write straight into the keys plugin's own count for
+  // this portal via its public addKey(delta, guid) API (a delta, not a setter — so the
+  // delta is computed from the portal's current count each time). Below what's needed,
+  // raise it to exactly what's needed; already at or above it, drop it back to 0. Only for
+  // window.plugin.keys — LiveInventory is a read-only reflection of the real inventory and
+  // has no such API.
+  thisplugin.toggleKeysPluginCount = function (guid, keysNeeded) {
+    if (!guid || !window.plugin.keys || typeof window.plugin.keys.addKey !== 'function') return;
+
+    var current = window.plugin.keys.keys[guid] || 0;
+    var delta = (current >= keysNeeded) ? -current : (keysNeeded - current);
+    if (delta !== 0) window.plugin.keys.addKey(delta, guid);
   };
 
   // Marks the active link order optimization (if any) as needing to be recomputed at the next
