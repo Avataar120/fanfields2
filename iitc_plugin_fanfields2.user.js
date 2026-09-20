@@ -36,6 +36,9 @@ function wrapper(plugin_info) {
       version: '2.8.13',
       changes: [
         'NEW: On mobile, tapping a portal name in the Task List now centers the map on that portal, highlights it and closes the list. Desktop is unchanged: the map is centered, the portal details open and the list stays open.',
+        'NEW: Task List\'s Fields cell now fades and strikes through, like the Links cell, once no outgoing link is left to throw from that portal.',
+        'FIX: Task List\'s Action column no longer stays on "Keys" for a portal once the keys you hold (Keys or LiveInventory plugin) cover what it needs — it now shows "Nothing".',
+        'FIX: On mobile, "Navigate with Google Maps" now only sends the next 10 stops still to do instead of the whole route, since a longer route could crash the Google Maps app.',
       ],
     },{
       version: '2.8.12',
@@ -529,6 +532,11 @@ function wrapper(plugin_info) {
   // const values
   // zoom level used for projecting points between latLng and pixel coordinates. may affect precision of triangulation
   thisplugin.PROJECT_ZOOM = 16;
+
+  // Most stops (origin included) handed to Google Maps on mobile: the Google Maps app itself
+  // caps a route at 10 stops, and a longer one can make the app misbehave or crash when opened
+  // from the "Navigate with Google Maps" link.
+  thisplugin.GOOGLE_MAPS_MAX_STOPS_MOBILE = 10;
 
   thisplugin.LABEL_WIDTH = 100;
   thisplugin.LABEL_HEIGHT = 49;
@@ -1063,7 +1071,9 @@ function wrapper(plugin_info) {
 
     text += '</tr></thead><tbody>';
 
-    var gmnav = 'http://maps.google.com/maps/dir/';
+    // Stops (lat,lng) for the Google Maps route, in walk order; the URL itself is built once
+    // the whole list is known, since on mobile it may have to be cut short.
+    var gmStops = [];
 
     // The walk order (relocations from "Less walking" included) — never sortedFanpoints
     // directly, which is the algorithm's own BUILD order and must stay untouched by display.
@@ -1175,13 +1185,15 @@ function wrapper(plugin_info) {
 
       // Action for this portal: the next thing standing in the way of finishing it here,
       // checked in priority order. "Nothing" means it's fully wrapped up.
-      var needsKeys = keysNeeded > 0 || (hasKeysPluginData && !hasEnoughKeys);
+      // With a keys plugin, the keys already held settle it; without one, any key still
+      // needed counts as outstanding since there's no way to know what's in the inventory.
+      var needsKeys = hasKeysPluginData ? !hasEnoughKeys : keysNeeded > 0;
       var action = needsCapture ? 'Capture' : (remainingOutgoingCount > 0 ? 'Link' : (needsKeys ? 'Keys' : 'Nothing'));
 
       // Google Maps route: skip a portal with nothing left to do here — no point stopping
       // there again, and it only lengthens the route for everyone else on it.
       if (action !== 'Nothing') {
-        gmnav += `${lat},${lng}/`;
+        gmStops.push(`${lat},${lng}`);
       }
 
       // A cell whose own number is already settled fades and strikes through on its own,
@@ -1258,8 +1270,10 @@ function wrapper(plugin_info) {
           fieldsCreatedAtThisPortal += (meta && meta.fieldsCreatedValid !== undefined) ? meta.fieldsCreatedValid : (meta && meta.creatingFieldsWith ? meta.creatingFieldsWith.length : 0);
         });
       }
-      // Fields (here: empty cell)
-      text += '<td class="plugin_fanfields2_fieldsCell" title="Fields created at this portal: ' +
+      // Fields: created by this portal's outgoing links, so once none are left to throw the
+      // fields are settled too — fade and strike them through like the Links cell.
+      text += '<td class="plugin_fanfields2_fieldsCell' + (linksCellDone ? ' plugin_fanfields2_cell_done' : '') +
+        '" title="Fields created at this portal: ' +
         fieldsCreatedAtThisPortal + '">' + fieldSymbol.repeat(fieldsCreatedAtThisPortal) + '</td>';
 
       // Row End
@@ -1335,7 +1349,14 @@ function wrapper(plugin_info) {
       text += '<br><div plugin_fanfields2_enoughKeys>Adjust available keys using your keys plugin.</div>';
     };
     text += '<hr noshade>';
-    gmnav += '&nav=1';
+
+    // On mobile, only the next stops still to do are sent (see GOOGLE_MAPS_MAX_STOPS_MOBILE);
+    // as portals get done they drop out of gmStops, so reopening the link moves the route on.
+    var gmStopsTotal = gmStops.length;
+    var gmStopsUsed = (L && L.Browser && L.Browser.mobile) ? gmStops.slice(0, thisplugin.GOOGLE_MAPS_MAX_STOPS_MOBILE) : gmStops;
+    var gmnav = 'http://maps.google.com/maps/dir/' + gmStopsUsed.map(function (s) { return s + '/'; }).join('') + '&nav=1';
+    var gmnavLabel = 'Navigate with Google Maps' +
+      (gmStopsUsed.length < gmStopsTotal ? ' (next ' + gmStopsUsed.length + ' of ' + gmStopsTotal + ' stops)' : '');
 
     let flipCount = Object.keys(thisplugin.manualLinkFlips || {}).length;
     text += '<div style="margin-top:10px; text-align:right;">' +
@@ -1349,7 +1370,7 @@ function wrapper(plugin_info) {
       text += '<a id="plugin_fanfields2_portal_route_link" href="#">Route with Portal Route</a><br>';
     }
     
-    text += '<a target="_blank" href="' + gmnav + '">Navigate with Google Maps</a>';
+    text += '<a target="_blank" href="' + gmnav + '">' + gmnavLabel + '</a>';
     text += '</div>';
 
     return text;
