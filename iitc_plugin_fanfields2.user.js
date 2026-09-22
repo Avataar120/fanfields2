@@ -997,19 +997,23 @@ function wrapper(plugin_info) {
       window.show('map');
     }
 
+    // draggable is already IITC's own default for a non-modal window.dialog() (see
+    // core/code/dialog.js) — not something this plugin needs to (or can usefully) turn on.
     dialog({
       html: '<div id="plugin_fanfields2_statistics_inner">' + thisplugin.buildStatisticsHTML() + '</div>',
       id: 'plugin_fanfields2_alert_statistics',
       title: 'Fan Fields 2 - Statistics',
       width: width,
-      closeOnEscape: true,
-      draggable: true
+      closeOnEscape: true
     });
 
     // Mobile: pin to the bottom of the screen instead of jQuery UI's default vertical
     // centering, so the dialog doesn't sit over the middle of the map where the portals are.
+    // IITC's window.dialog() prefixes the id we pass with "dialog-" for the actual jQuery UI
+    // element (see addTaskListShiftButtons) — '#plugin_fanfields2_alert_statistics' alone
+    // matches nothing.
     if (isMobile) {
-      $('#plugin_fanfields2_alert_statistics')
+      $('#dialog-plugin_fanfields2_alert_statistics')
         .dialog('option', 'position', { my: 'bottom', at: 'bottom-10', of: window });
     }
   }
@@ -1650,8 +1654,10 @@ function wrapper(plugin_info) {
     // Pinned to the top of the screen rather than jQuery UI's default vertical centering: as
     // the dialog's height gets capped (see getMaxDialogHeight), centering would just push it
     // further down instead of shrinking it upward, defeating the point of the cap on a short
-    // mobile screen.
-    $('#plugin_fanfields2_alert_textExport')
+    // mobile screen. IITC's window.dialog() prefixes the id we pass with "dialog-" for the
+    // actual jQuery UI element (see addTaskListShiftButtons below, which already accounts for
+    // this) — '#plugin_fanfields2_alert_textExport' alone matches nothing.
+    $('#dialog-plugin_fanfields2_alert_textExport')
       .dialog('option', 'position', { my: 'top', at: 'top+10', of: window });
 
     thisplugin.wireTaskListHandlers();
