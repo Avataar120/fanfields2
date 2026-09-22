@@ -1014,7 +1014,7 @@ function wrapper(plugin_info) {
     // matches nothing.
     if (isMobile) {
       $('#dialog-plugin_fanfields2_alert_statistics')
-        .dialog('option', 'position', { my: 'bottom', at: 'bottom-10', of: window });
+        .dialog('option', 'position', { my: 'bottom', at: 'bottom-15', of: window });
     }
   }
 
