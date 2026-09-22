@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.14.20260922
+// @version         2.8.15.20260922
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-22-120000';
+  plugin_info.dateTimeVersion = '2026-09-22-153000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,11 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.15',
+      changes: [
+        'FIX: The Statistics window no longer stays frozen on stale numbers — it now updates live every time the plan recalculates, same as the Task List already did.',
+      ],
+    },{
       version: '2.8.14',
       changes: [
         'NEW: Added a "Pick anchor" button (in the sidebar and next to the map\'s own Shift left/right buttons) to make any portal the anchor just by clicking it on the map — including one in the middle of the selection, not only the outer edge portals reachable with Shift left/right.',
@@ -925,45 +930,91 @@ function wrapper(plugin_info) {
 
 
 
+  // Statistics dialog: build the HTML for the current plan. Used both to open the dialog and
+  // to refresh it live (see thisplugin.refreshStatisticsIfOpen) as the background plan changes.
+  thisplugin.buildStatisticsHTML = function () {
+    if (!thisplugin.sortedFanpoints || thisplugin.sortedFanpoints.length <= 3) {
+      return '<p>No Fanfield plan calculated yet.<br>Draw a polygon and let Fanfields calculate first.</p>';
+    }
+
+    var totalLinks = thisplugin.donelinks.length;
+    var validLinks = (thisplugin.validLinkCount !== undefined) ? thisplugin.validLinkCount : totalLinks;
+    var totalFields = thisplugin.triangles.length;
+    var validFields = (thisplugin.validTriangleCount !== undefined) ? thisplugin.validTriangleCount : totalFields;
+
+    var linksText = (validLinks !== totalLinks) ? (validLinks + ' / ' + totalLinks) : validLinks.toString();
+    var fieldsText = (validFields !== totalFields) ? (validFields + ' / ' + totalFields) : validFields.toString();
+
+    var warn = '';
+    if (validLinks !== totalLinks || validFields !== totalFields) {
+      warn = '<tr><td colspan="2"><span class="plugin_fanfields2_warn">⚠ Under-field invalid links excluded from counts</span></td></tr>';
+    }
+
+    return '<table><tr><td>FanPortals:</td><td>' + (thisplugin.n - 1) + '</td><tr>' +
+      '<tr><td>CenterKeys:</td><td>' + thisplugin.centerKeys + '</td><tr>' +
+      '<tr><td>Total links / keys:</td><td>' + linksText + '</td><tr>' +
+      '<tr><td>Fields:</td><td>' + fieldsText + '</td><tr>' +
+      '<tr><td>Build AP (links and fields):</td><td>' + (validLinks * 313 + validFields * 1250).toString() + '</td><tr>' +
+      warn +
+      '</table>';
+  };
+
+  // Whether the Statistics dialog is currently open and visible.
+  thisplugin.isStatisticsDialogOpen = function () {
+    return $('#plugin_fanfields2_statistics_inner').is(':visible');
+  };
+
+  // Rebuild the Statistics dialog's content in place. Used to auto-refresh live as the
+  // background plan changes (new links appearing in-game, fan field rotation, etc.), mirroring
+  // thisplugin.refreshTaskListDialog for the Task List.
+  thisplugin.refreshStatisticsDialog = function () {
+    $('#plugin_fanfields2_statistics_inner').html(thisplugin.buildStatisticsHTML());
+  };
+
+  // Called after every plan recalculation (see updateLayer) so an open Statistics dialog
+  // reflects the latest counts without the user having to close and reopen it.
+  thisplugin.refreshStatisticsIfOpen = function () {
+    if (thisplugin.isStatisticsDialogOpen()) {
+      thisplugin.refreshStatisticsDialog();
+    }
+  };
+
   thisplugin.showStatistics = function () {
-    var text = '';
-    if (this.sortedFanpoints.length > 3) {
-      text = '';
-      var totalLinks = thisplugin.donelinks.length;
-      var validLinks = (thisplugin.validLinkCount !== undefined) ? thisplugin.validLinkCount : totalLinks;
-      var totalFields = thisplugin.triangles.length;
-      var validFields = (thisplugin.validTriangleCount !== undefined) ? thisplugin.validTriangleCount : totalFields;
+    if (!thisplugin.sortedFanpoints || thisplugin.sortedFanpoints.length <= 3) return;
 
-      var linksText = (validLinks !== totalLinks) ? (validLinks + ' / ' + totalLinks) : validLinks.toString();
-      var fieldsText = (validFields !== totalFields) ? (validFields + ' / ' + totalFields) : validFields.toString();
+    var width = 400;
+    thisplugin.MaxDialogWidth = thisplugin.getMaxDialogWidth();
+    if (thisplugin.MaxDialogWidth < width) {
+      width = thisplugin.MaxDialogWidth;
+    }
 
-      var warn = '';
-      if (validLinks !== totalLinks || validFields !== totalFields) {
-        warn = '<tr><td colspan="2"><span class="plugin_fanfields2_warn">⚠ Under-field invalid links excluded from counts</span></td></tr>';
-      }
+    var isMobile = L && L.Browser && L.Browser.mobile;
 
-      text = '<table><tr><td>FanPortals:</td><td>' + (thisplugin.n - 1) + '</td><tr>' +
-        '<tr><td>CenterKeys:</td><td>' + thisplugin.centerKeys + '</td><tr>' +
-        '<tr><td>Total links / keys:</td><td>' + linksText + '</td><tr>' +
-        '<tr><td>Fields:</td><td>' + fieldsText + '</td><tr>' +
-        '<tr><td>Build AP (links and fields):</td><td>' + (validLinks * 313 + validFields * 1250).toString() + '</td><tr>' +
-        warn +
-        '</table>';
+    // Mobile: the Stats button lives in IITC's own sidebar/info pane, which covers the whole
+    // screen there — switch back to the map pane first so the dialog opened below shows over
+    // the map, not over the (now pointless) sidebar.
+    if (isMobile && typeof window.show === 'function') {
+      window.show('map');
+    }
 
+    // draggable is already IITC's own default for a non-modal window.dialog() (see
+    // core/code/dialog.js) — not something this plugin needs to (or can usefully) turn on.
+    dialog({
+      html: '<div id="plugin_fanfields2_statistics_inner">' + thisplugin.buildStatisticsHTML() + '</div>',
+      id: 'plugin_fanfields2_alert_statistics',
+      title: 'Fan Fields 2 - Statistics',
+      width: width,
+      closeOnEscape: true
+    });
 
-      var width = 400;
-      thisplugin.MaxDialogWidth = thisplugin.getMaxDialogWidth();
-      if (thisplugin.MaxDialogWidth < width) {
-        width = thisplugin.MaxDialogWidth;
-      }
-
-      dialog({
-        html: text,
-        id: 'plugin_fanfields2_alert_statistics',
-        title: 'Fan Fields 2 - Statistics',
-        width: width,
-        closeOnEscape: true
-      });
+    // Mobile: pin to the bottom of the screen instead of jQuery UI's default vertical
+    // centering, so the dialog doesn't sit over the middle of the map where the portals are.
+    // IITC's window.dialog() prefixes the id we pass with "dialog-" for the actual jQuery UI
+    // element (see addTaskListShiftButtons) — '#plugin_fanfields2_alert_statistics' alone
+    // matches nothing.
+    if (isMobile) {
+      $('#dialog-plugin_fanfields2_alert_statistics')
+        .dialog('option', 'position', { my: 'bottom', at: 'bottom-15', of: window });
     }
   }
 
@@ -1603,8 +1654,10 @@ function wrapper(plugin_info) {
     // Pinned to the top of the screen rather than jQuery UI's default vertical centering: as
     // the dialog's height gets capped (see getMaxDialogHeight), centering would just push it
     // further down instead of shrinking it upward, defeating the point of the cap on a short
-    // mobile screen.
-    $('#plugin_fanfields2_alert_textExport')
+    // mobile screen. IITC's window.dialog() prefixes the id we pass with "dialog-" for the
+    // actual jQuery UI element (see addTaskListShiftButtons below, which already accounts for
+    // this) — '#plugin_fanfields2_alert_textExport' alone matches nothing.
+    $('#dialog-plugin_fanfields2_alert_textExport')
       .dialog('option', 'position', { my: 'top', at: 'top+10', of: window });
 
     thisplugin.wireTaskListHandlers();
@@ -4855,9 +4908,10 @@ function wrapper(plugin_info) {
       thisplugin.orderPathLayerGroup.clearLayers();
     }
 
-    // Keep an open Task List in sync with the background plan (new links appearing
-    // in-game, fan field rotation, etc.) without requiring it to be reopened.
+    // Keep an open Task List and Statistics dialog in sync with the background plan (new
+    // links appearing in-game, fan field rotation, etc.) without requiring them to be reopened.
     thisplugin.refreshTaskListIfOpen();
+    thisplugin.refreshStatisticsIfOpen();
   };
 
 
