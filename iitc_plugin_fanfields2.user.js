@@ -2303,6 +2303,12 @@ function wrapper(plugin_info) {
   thisplugin.is_locked = false;
   thisplugin.lock = function () {
     thisplugin.is_locked = !thisplugin.is_locked;
+    thisplugin.updateLockButton();
+  };
+
+  // Keeps the sidebar Lock/Unlock button and the map's own topleft padlock control (see
+  // addFfButtons) in sync with thisplugin.is_locked — whichever of the two was just clicked.
+  thisplugin.updateLockButton = function () {
     if (thisplugin.is_locked) {
       $('#plugin_fanfields2_lockbtn')
         .html('&#128274;&nbsp;Locked'); // &#128274;
@@ -2310,6 +2316,13 @@ function wrapper(plugin_info) {
       $('#plugin_fanfields2_lockbtn')
         .html('&#128275;&nbsp;Unlocked'); // &#128275;
     }
+
+    $('#fanfieldLockButton')
+      .html(thisplugin.is_locked ? lockIconClosed : lockIconOpen)
+      .toggleClass('plugin_fanfields2_lock_locked', thisplugin.is_locked)
+      .attr('title', thisplugin.is_locked
+        ? 'Locked: click to let the plan recalculate again'
+        : 'Unlocked: click to freeze the plan and stop it recalculating');
   };
 
   thisplugin.use_bookmarks_only = false;
@@ -2744,6 +2757,21 @@ function wrapper(plugin_info) {
       '#fanfieldPickAnchorButton.plugin_fanfields2_active {\n' +
       '  box-shadow: 0 0 0 2px #ffce00 inset;\n' +
       '  color: #ffce00;\n' +
+      '}\n'
+    );
+
+    // Map topleft Lock/Unlock control: green open padlock while the plan still recalculates
+    // freely, red closed padlock once it's frozen (thisplugin.is_locked) — the SVG icon uses
+    // fill="currentColor", so its color follows this element's own color.
+    addCSS('\n' +
+      '#fanfieldLockButton {\n' +
+      '  color: #4CAF50;\n' +
+      '}\n' +
+      '#fanfieldLockButton.plugin_fanfields2_lock_locked {\n' +
+      '  color: #ff4444;\n' +
+      '}\n' +
+      '.plugin_fanfields2_lock_svg {\n' +
+      '  vertical-align: middle;\n' +
       '}\n'
     );
 
@@ -5059,6 +5087,12 @@ function wrapper(plugin_info) {
   var symbol_clipboard = '&#128203;';
   var symbol_target = '&#127919;';
 
+  // Padlock icons for the Lock/Unlock control (map topleft button and, via CSS color, the
+  // sidebar Lock/Unlock button's icon too): plain SVG rather than the 🔒/🔓 emoji, since an
+  // emoji's color is fixed by the OS/browser font and can't be recolored to green/red.
+  var lockIconOpen = '<svg class="plugin_fanfields2_lock_svg" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M18,8H17V6A5,5 0 0,0 12,1C10.06,1 8.4,2.13 7.6,3.75L9.32,4.44C9.75,3.6 10.79,3 12,3A3,3 0 0,1 15,6V8H6A2,2 0 0,0 4,10V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V10A2,2 0 0,0 18,8M12,17A2,2 0 0,1 10,15A2,2 0 0,1 12,13A2,2 0 0,1 14,15A2,2 0 0,1 12,17Z"/></svg>';
+  var lockIconClosed = '<svg class="plugin_fanfields2_lock_svg" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z"/></svg>';
+
   thisplugin.addFfButtons = function () {
     thisplugin.ffButtons = L.Control.extend({
       options: {
@@ -5109,6 +5143,15 @@ function wrapper(plugin_info) {
           )
           .on("click", "#fanfieldPickAnchorButton", function () {
             thisplugin.toggleAnchorPicking();
+          });
+
+        $(container)
+          .append(
+            '<a id="fanfieldLockButton" href="javascript: void(0);" class="fanfields-control" title="Unlocked: click to freeze the plan and stop it recalculating">' +
+            lockIconOpen + '</a>'
+          )
+          .on("click", "#fanfieldLockButton", function () {
+            thisplugin.lock();
           });
 
         return container;
@@ -5323,6 +5366,7 @@ function wrapper(plugin_info) {
     thisplugin.updateRespectIntelButton();
     thisplugin.updateGreyOutExistingLinksButton();
     thisplugin.updateLinkOrderModeButton();
+    thisplugin.updateLockButton();
 
     //         window.pluginCreateHook('pluginBkmrksEdit');
 
