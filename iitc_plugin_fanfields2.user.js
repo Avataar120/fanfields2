@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.13.20260920
+// @version         2.8.14.20260922
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-20-183400';
+  plugin_info.dateTimeVersion = '2026-09-22-120000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,12 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.14',
+      changes: [
+        'NEW: Added a "Pick anchor" button (in the sidebar and next to the map\'s own Shift left/right buttons) to make any portal the anchor just by clicking it on the map — including one in the middle of the selection, not only the outer edge portals reachable with Shift left/right.',
+        'IMPROVE: The automatic anchor/direction search that runs right after drawing or editing a polygon now considers every portal inside it, not only the outer edge ones, when picking whichever reuses the most links already thrown in-game for your faction.',
+      ],
+    },{
       version: '2.8.13',
       changes: [
         'NEW: On mobile, tapping a portal name in the Task List now centers the map on that portal, highlights it and closes the list. Desktop is unchanged: the map is centered, the portal details open and the list stays open.',
@@ -533,6 +539,11 @@ function wrapper(plugin_info) {
   // zoom level used for projecting points between latLng and pixel coordinates. may affect precision of triangulation
   thisplugin.PROJECT_ZOOM = 16;
 
+  // Debug: when true, updateLayer() logs the plan's portals (with coordinates) and the drawn
+  // polygon(s) to the console on every recalculation. Toggle from the console:
+  // window.plugin.fanfields.debugLogPlan = false;
+  thisplugin.debugLogPlan = true;
+
   // Most stops (origin included) handed to Google Maps on mobile: a longer route can make the
   // Google Maps app misbehave or crash when opened from the "Navigate with Google Maps" link.
   thisplugin.GOOGLE_MAPS_MAX_STOPS_MOBILE = 20;
@@ -556,6 +567,26 @@ function wrapper(plugin_info) {
   thisplugin.sortedFanpoints = [];
   thisplugin.perimeterpoints = [];
   thisplugin.startingpointIndex = 0;
+
+  // Pinned anchor (guid), applied by updateLayer() on every recalculation: extends
+  // thisplugin.perimeterpoints with it if needed and re-derives thisplugin.startingpointIndex
+  // from it, so an anchor OFF the hull sticks around across recalculations exactly like a hull
+  // one. null means "no pin" — the algorithm's own hull-based choice (or the marker, if any)
+  // applies as usual. Set two ways:
+  //  - thisplugin.setAnchorByGuid (the "Pick anchor" button): an explicit user choice —
+  //    thisplugin.forcedAnchorIsManual is set alongside it, so the auto-orientation search
+  //    below never silently overrides it on a later polygon edit.
+  //  - the auto-orientation search itself, for its own best pick when that pick isn't a hull
+  //    portal — forcedAnchorIsManual stays false, so a genuinely new polygon can freely
+  //    re-search and replace it.
+  // Cleared by cycling (previousStartingPoint/nextStartingPoint), since stepping away from a
+  // pinned anchor means the user no longer wants it pinned, manual or not.
+  thisplugin.forcedAnchorGUID = null;
+  thisplugin.forcedAnchorIsManual = false;
+
+  // Whether the next portal click on the map should set that portal as the anchor (see the
+  // Pick anchor sidebar button and the portalSelected hook in setup()).
+  thisplugin.isPickingAnchor = false;
 
 
 
@@ -629,8 +660,9 @@ function wrapper(plugin_info) {
   // updateLayer() run searches for whichever anchor/direction reuses the most links already
   // thrown in-game for our own faction, instead of keeping whatever anchor/direction happened
   // to be selected before. Never set for anything else (order changes, zoom, link flips, ...)
-  // — this search tries every hull anchor in both directions, so it's deliberately reserved
-  // for an actual new polygon rather than every recalculation.
+  // — this search tries every portal in the polygon(s) as anchor (hull or not) in both
+  // directions, so it's deliberately reserved for an actual new polygon rather than every
+  // recalculation.
   thisplugin._orientationSearchPending = false;
 
   // The walk/display order: thisplugin.sortedFanpoints reordered per thisplugin.displayOrderGuids
@@ -746,6 +778,12 @@ function wrapper(plugin_info) {
   };
 
   thisplugin.updateStartingPoint = function (i) {
+    // Stepping through the hull by hand means giving up whichever anchor was pinned —
+    // manually or by the auto-orientation search — otherwise the pin would just fight the
+    // cycle buttons on the very next recalculation.
+    thisplugin.forcedAnchorGUID = null;
+    thisplugin.forcedAnchorIsManual = false;
+
     thisplugin.startingpointIndex = i;
     thisplugin.startingpointGUID = thisplugin.perimeterpoints[thisplugin.startingpointIndex][0];
     thisplugin.startingpoint = this.fanpoints[thisplugin.startingpointGUID];
@@ -777,6 +815,41 @@ function wrapper(plugin_info) {
       i = thisplugin.perimeterpoints.length - 1;
     }
     thisplugin.updateStartingPoint(i);
+  };
+
+  // Manually force any portal currently in the plan to become the anchor — hull or not.
+  // Unlike a DrawTools marker, this doesn't require a pixel-exact snap: it directly pins
+  // thisplugin.forcedAnchorGUID, which updateLayer() applies on every recalculation (see the
+  // "forcedAnchorGUID" block there). Returns false without doing anything if the portal isn't
+  // part of the current plan (outside the drawn polygon(s), or excluded by Bookmarks-only).
+  thisplugin.setAnchorByGuid = function (guid) {
+    if (!guid || !thisplugin.fanpoints || !(guid in thisplugin.fanpoints)) return false;
+
+    thisplugin.forcedAnchorGUID = guid;
+    thisplugin.forcedAnchorIsManual = true;
+
+    // Reset manual order and link flips because the start/anchor changed (ghi#23), same as
+    // cycling via updateStartingPoint.
+    thisplugin.manualOrderGuids = null;
+    thisplugin.manualLinkFlips = {};
+    thisplugin.relocatedForLessWalkingGuids = {};
+    thisplugin.displayOrderGuids = null;
+    thisplugin.requestLinkOrderRecompute();
+
+    thisplugin.updateLayer();
+    return true;
+  };
+
+  // "Pick anchor" sidebar button: toggles whether the next portal click on the map sets that
+  // portal as the anchor (see the portalSelected hook in setup()).
+  thisplugin.toggleAnchorPicking = function () {
+    thisplugin.isPickingAnchor = !thisplugin.isPickingAnchor;
+    thisplugin.updateAnchorPickingButton();
+  };
+
+  thisplugin.updateAnchorPickingButton = function () {
+    $('#plugin_fanfields2_pickanchor_btn, #fanfieldPickAnchorButton')
+      .toggleClass('plugin_fanfields2_active', thisplugin.isPickingAnchor);
   };
 
   thisplugin.helpDialogWidth = 650;
@@ -2562,6 +2635,17 @@ function wrapper(plugin_info) {
       '}\n'
     );
 
+    // "Pick anchor" buttons (sidebar and the map's own topleft control): highlighted while
+    // armed (next portal click sets the anchor), so it reads as a toggle rather than a
+    // one-off action.
+    addCSS('\n' +
+      '#plugin_fanfields2_pickanchor_btn.plugin_fanfields2_active,\n' +
+      '#fanfieldPickAnchorButton.plugin_fanfields2_active {\n' +
+      '  box-shadow: 0 0 0 2px #ffce00 inset;\n' +
+      '  color: #ffce00;\n' +
+      '}\n'
+    );
+
     // Task List: once a portal's Action is "Nothing" (owned, no outgoing links left, no
     // keys still needed), the whole portal line fades from bright to pale yellow and is
     // struck through, end to end.
@@ -3887,6 +3971,50 @@ function wrapper(plugin_info) {
   thisplugin.triangles = [];
   thisplugin.donelinks = [];
 
+  // Debug: dump the current plan's portals (with coordinates) and the drawn polygon(s) that
+  // selected them. Called from updateLayer() once thisplugin.fanpoints/perimeterpoints/dtLayers
+  // are up to date. Toggle with: window.plugin.fanfields.debugLogPlan = true/false;
+  thisplugin.logPlanDebugInfo = function () {
+    var hullGuids = {};
+    (thisplugin.perimeterpoints || []).forEach(function (entry) {
+      hullGuids[entry[0]] = true;
+    });
+
+    var portalRows = Object.keys(thisplugin.fanpoints || {})
+      .map(function (guid) {
+        var portal = window.portals[guid];
+        var ll = portal ? portal.getLatLng() : null;
+        var p = thisplugin.fanpoints[guid];
+        return {
+          guid: guid,
+          title: (portal && portal.options && portal.options.data && portal.options.data.title) ? portal.options.data.title : 'unknown title',
+          lat: ll ? ll.lat : undefined,
+          lng: ll ? ll.lng : undefined,
+          x: p ? p.x : undefined,
+          y: p ? p.y : undefined,
+          onHull: !!hullGuids[guid],
+        };
+      });
+
+    var polygons = (thisplugin.dtLayers || [])
+      .filter(function (layer) {
+        return layer instanceof L.GeodesicPolygon;
+      })
+      .map(function (layer) {
+        return layer.getLatLngs()
+          .map(function (ll) {
+            return { lat: ll.lat, lng: ll.lng };
+          });
+      });
+
+    console.log('FanFields2 debug: ' + portalRows.length + ' portal(s) in plan, ' + polygons.length + ' polygon(s)');
+    console.table(portalRows);
+    polygons.forEach(function (vertices, i) {
+      console.log('Polygon #' + i + ' (' + vertices.length + ' vertices):');
+      console.table(vertices);
+    });
+  };
+
   thisplugin.updateLayer = function () {
     var donelinks = [];
     var triangles = [];
@@ -4166,12 +4294,11 @@ function wrapper(plugin_info) {
       if (GUID !== undefined) {
 
         for (i = 0; i < perimeter.length; i++) {
-          if (perimeter[i] === GUID) {
+          if (perimeter[i][0] === GUID) {
             //already in
             done = true;
             break;
           }
-          if (done) break;
         }
         if (!done) {
           // add the marker to the perimeter
@@ -4193,8 +4320,40 @@ function wrapper(plugin_info) {
       thisplugin.perimeterpoints = extendperimeter(thisplugin.perimeterpoints, thisplugin.startingMarkerGUID, thisplugin.startingMarker)
     }
 
-    //console.log("fanpoints: ========================================================");
-    //console.log(this.fanpoints);
+    // Points thisplugin.startingpointIndex at `guid` within thisplugin.perimeterpoints,
+    // extending that list first if it isn't already there (same trick as the DrawTools marker
+    // above). Shared by the forcedAnchorGUID block right below and the auto-orientation search
+    // further down — both need to make an arbitrary fanpoint (not just a hull vertex) the
+    // actual, sticky anchor.
+    function pinStartingpointToGuid(guid) {
+      thisplugin.perimeterpoints = extendperimeter(thisplugin.perimeterpoints, guid, thisplugin.fanpoints[guid]);
+      for (var pi = 0; pi < thisplugin.perimeterpoints.length; pi++) {
+        if (thisplugin.perimeterpoints[pi][0] === guid) {
+          thisplugin.startingpointIndex = pi;
+          return;
+        }
+      }
+    }
+
+    // Pinned anchor (thisplugin.setAnchorByGuid — Pick anchor button, or the auto-orientation
+    // search below picking an off-hull portal): pin thisplugin.startingpointIndex to it every
+    // run, since buildFanPlan() only ever reads the anchor via thisplugin.perimeterpoints[...].
+    // Cleared if the portal dropped out of the plan (polygon edited, Bookmarks-only toggled, …).
+    if (thisplugin.forcedAnchorGUID !== null) {
+      if (thisplugin.forcedAnchorGUID in thisplugin.fanpoints) {
+        pinStartingpointToGuid(thisplugin.forcedAnchorGUID);
+      } else {
+        thisplugin.forcedAnchorGUID = null;
+        thisplugin.forcedAnchorIsManual = false;
+      }
+    }
+
+    // Debug: dump the portals considered for the plan (guid, title, lat/lng, projected x/y,
+    // whether they're on the convex hull) and the drawn polygon(s) used to select them.
+    // Toggle from the console with: window.plugin.fanfields.debugLogPlan = false;
+    if (thisplugin.debugLogPlan) {
+      thisplugin.logPlanDebugInfo();
+    }
 
     // Use currently selected index in outer hull as starting point
     if (thisplugin.startingpointIndex >= thisplugin.perimeterpoints.length) {
@@ -4203,13 +4362,14 @@ function wrapper(plugin_info) {
 
     console.log("startingpointIndex = " + thisplugin.startingpointIndex);
 
-    // Builds a candidate plan for a given anchor (perimeter index) and direction, entirely in
-    // local state — never touching thisplugin.startingpointIndex/is_clockwise/sortedFanpoints/
-    // links/triangles/centerKeys, etc. This used to be a single inline block computed only
-    // once per run, for whatever anchor/direction was already selected; it's now a reusable,
-    // side-effect-free building block, so it can also be tried out repeatedly — for different
-    // candidate anchors/directions — by searchBestOrientation below, before committing to one.
-    function buildFanPlan(startIndex, clockwise) {
+    // Builds a candidate plan for a given anchor (guid, any fanpoint — not just a hull vertex)
+    // and direction, entirely in local state — never touching thisplugin.startingpointIndex/
+    // is_clockwise/sortedFanpoints/links/triangles/centerKeys, etc. This used to be a single
+    // inline block computed only once per run, for whatever anchor/direction was already
+    // selected; it's now a reusable, side-effect-free building block, so it can also be tried
+    // out repeatedly — for different candidate anchors/directions — by the auto-orientation
+    // search below, before committing to one.
+    function buildFanPlan(candidateStartingpointGUID, clockwise) {
       var localN = 0;
       var localCenterOutgoings = 0;
       var localCenterSbul = 0;
@@ -4219,7 +4379,6 @@ function wrapper(plugin_info) {
       var localTriangles = [];
       var localSorted = [];
 
-      var candidateStartingpointGUID = thisplugin.perimeterpoints[startIndex][0];
       var candidateStartingpoint = thisplugin.fanpoints[candidateStartingpointGUID];
 
       var guid, a, b, fp, i;
@@ -4501,18 +4660,21 @@ function wrapper(plugin_info) {
 
     if (thisplugin.perimeterpoints.length !== 0) {
       // Right after a brand new polygon just replaced the previous portal set (never on every
-      // recalculation — this tries every hull anchor in both directions, so it's
-      // comparatively expensive) — and only while unlocked, and only when no manual portal
-      // order is active (that already fixes anchor/order by hand) — pick whichever anchor and
-      // direction reuses the most links already thrown in-game for our own faction, so the
-      // freshly (re)calculated plan lines up with real progress instead of resetting to
-      // whatever anchor/direction happened to be selected before the polygon changed.
+      // recalculation — this tries EVERY portal in the polygon(s) as anchor, hull or not, in
+      // both directions, so it's comparatively expensive) — and only while unlocked, and only
+      // when no manual portal order is active (that already fixes anchor/order by hand) and no
+      // MANUALLY pinned anchor is active (an automatic pick from a previous run doesn't count
+      // — see thisplugin.forcedAnchorIsManual) — pick whichever anchor and direction reuses
+      // the most links already thrown in-game for our own faction, so the freshly
+      // (re)calculated plan lines up with real progress instead of resetting to whatever
+      // anchor/direction happened to be selected before the polygon changed.
       if (thisplugin._orientationSearchPending) {
         thisplugin._orientationSearchPending = false;
 
-        if (!thisplugin.is_locked && !thisplugin.manualOrderGuids) {
-          var scoreOrientation = function (idx, cw) {
-            var candidate = buildFanPlan(idx, cw);
+        if (!thisplugin.is_locked && !thisplugin.manualOrderGuids &&
+          !(thisplugin.forcedAnchorGUID && thisplugin.forcedAnchorIsManual)) {
+          var scoreOrientation = function (guid, cw) {
+            var candidate = buildFanPlan(guid, cw);
             var score = 0;
             candidate.donelinks.forEach(function (link) {
               if (link.guidA && link.guidB && thisplugin.isLinkInGame(link.guidA, link.guidB)) score++;
@@ -4520,28 +4682,33 @@ function wrapper(plugin_info) {
             return score;
           };
 
-          var bestIndex = thisplugin.startingpointIndex;
+          var bestGuid = thisplugin.perimeterpoints[thisplugin.startingpointIndex][0];
           var bestClockwise = thisplugin.is_clockwise;
-          var bestScore = scoreOrientation(bestIndex, bestClockwise);
+          var bestScore = scoreOrientation(bestGuid, bestClockwise);
 
-          for (var oi = 0; oi < thisplugin.perimeterpoints.length; oi++) {
+          Object.keys(thisplugin.fanpoints).forEach(function (candidateGuid) {
             [true, false].forEach(function (cw) {
-              if (oi === bestIndex && cw === bestClockwise) return;
-              var score = scoreOrientation(oi, cw);
+              if (candidateGuid === bestGuid && cw === bestClockwise) return;
+              var score = scoreOrientation(candidateGuid, cw);
               if (score > bestScore) {
                 bestScore = score;
-                bestIndex = oi;
+                bestGuid = candidateGuid;
                 bestClockwise = cw;
               }
             });
-          }
+          });
 
-          thisplugin.startingpointIndex = bestIndex;
           thisplugin.is_clockwise = bestClockwise;
+
+          // Pin the pick (auto, not manual) so it sticks across future recalculations even
+          // when it isn't a hull vertex — see pinStartingpointToGuid/forcedAnchorGUID above.
+          thisplugin.forcedAnchorGUID = bestGuid;
+          thisplugin.forcedAnchorIsManual = false;
+          pinStartingpointToGuid(bestGuid);
         }
       }
 
-      var builtPlan = buildFanPlan(thisplugin.startingpointIndex, thisplugin.is_clockwise);
+      var builtPlan = buildFanPlan(thisplugin.perimeterpoints[thisplugin.startingpointIndex][0], thisplugin.is_clockwise);
       thisplugin.startingpointGUID = builtPlan.startingpointGUID;
       thisplugin.startingpoint = builtPlan.startingpoint;
       this.sortedFanpoints = builtPlan.sortedFanpoints;
@@ -4788,6 +4955,7 @@ function wrapper(plugin_info) {
   var symbol_clockwise = '&#8635;';
   var symbol_counterclockwise = '&#8634;';
   var symbol_clipboard = '&#128203;';
+  var symbol_target = '&#127919;';
 
   thisplugin.addFfButtons = function () {
     thisplugin.ffButtons = L.Control.extend({
@@ -4830,6 +4998,15 @@ function wrapper(plugin_info) {
           )
           .on("click", "#fanfieldShiftRightButton", function () {
             thisplugin.nextStartingPoint();
+          });
+
+        $(container)
+          .append(
+            '<a id="fanfieldPickAnchorButton" href="javascript: void(0);" class="fanfields-control" title="Pick anchor: click a portal on the map to make it the anchor, even one inside the hull">' +
+            symbol_target + '</a>'
+          )
+          .on("click", "#fanfieldPickAnchorButton", function () {
+            thisplugin.toggleAnchorPicking();
           });
 
         return container;
@@ -4952,6 +5129,13 @@ function wrapper(plugin_info) {
       '<a class="plugin_fanfields2_btn" onclick="window.plugin.fanfields.nextStartingPoint();" title="Restraint Path Gain Harmony">Shift&nbsp;right&nbsp;' +
       symbol_clockwise + '</a>';
 
+    // Pick anchor: click this, then click any portal on the map (even inside the hull) to
+    // make it the anchor. Toggle-styled — stays highlighted while armed, until a portal is
+    // clicked or the button is pressed again.
+    var buttonPickAnchor =
+      '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_pickanchor_btn" onclick="window.plugin.fanfields.toggleAnchorPicking();" title="Click a portal on the map to make it the anchor, even one inside the hull">' +
+      symbol_target + '&nbsp;Pick&nbsp;anchor</a> ';
+
     var buttonStats =
       '<a class="plugin_fanfields2_btn" id="plugin_fanfields2_statsbtn" onclick="window.plugin.fanfields.showStatistics();" title="See Truth Now">Stats</a> ';
 
@@ -4972,6 +5156,7 @@ function wrapper(plugin_info) {
 
     fanfields_buttons +=
       buttonShiftAnchor +
+      buttonPickAnchor +
       buttonClockwise +
       buttonStarDirection +
       buttonSBUL +
@@ -5057,6 +5242,34 @@ function wrapper(plugin_info) {
       setTimeout(function () {
         thisplugin.onLiveDataChanged(3.0);
       }, 1);
+    });
+
+    // "Pick anchor" (sidebar button): the next portal clicked/selected on the map becomes
+    // the anchor, hull or not. Disarms itself after one pick (or a failed one), same as most
+    // single-shot picking tools. A portal outside the current plan (outside the drawn
+    // polygon(s), or excluded by Bookmarks-only) can't be set — warn instead of failing silently.
+    window.addHook('portalSelected', function (data) {
+      if (!thisplugin.isPickingAnchor) return;
+
+      thisplugin.isPickingAnchor = false;
+      thisplugin.updateAnchorPickingButton();
+
+      var guid = data && data.selectedPortalGuid;
+      if (!guid) return;
+
+      if (!thisplugin.setAnchorByGuid(guid)) {
+        var width = 380;
+        thisplugin.MaxDialogWidth = thisplugin.getMaxDialogWidth();
+        if (thisplugin.MaxDialogWidth < width) width = thisplugin.MaxDialogWidth;
+
+        dialog({
+          html: '<p>This portal is not part of the current Fan Fields plan — it\'s outside the drawn polygon(s), or excluded by Bookmarks-only.</p>',
+          id: 'plugin_fanfields2_alert_anchor_outside',
+          title: 'Fan Fields 2 - Pick anchor',
+          width: width,
+          closeOnEscape: true
+        });
+      }
     });
 
     window.map.on('moveend', function () {
