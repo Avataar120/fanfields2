@@ -1,21 +1,21 @@
 // ==UserScript==
-// @author          Heistergand
-// @id              fanfields@heistergand
+// @author          Avataar120 (fork of Heistergand's Fan Fields 2)
+// @id              fanfields@avataar120
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.15.20260922
+// @version         2.8.16.20260922
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
-// @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
-// @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
-// @icon            https://raw.githubusercontent.com/Heistergand/fanfields2/master/fanfields2-32.png
-// @icon64          https://raw.githubusercontent.com/Heistergand/fanfields2/master/fanfields2-64.png
-// @supportURL      https://github.com/Heistergand/fanfields2/issues
-// @namespace       https://github.com/Heistergand/fanfields2
-// @issueTracker    https://github.com/Heistergand/fanfields2/issues
-// @homepageURL     https://github.com/Heistergand/fanfields2/
+// @downloadURL     https://github.com/Avataar120/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
+// @updateURL       https://github.com/Avataar120/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
+// @icon            https://raw.githubusercontent.com/Avataar120/fanfields2/master/fanfields2-32.png
+// @icon64          https://raw.githubusercontent.com/Avataar120/fanfields2/master/fanfields2-64.png
+// @supportURL      https://github.com/Avataar120/fanfields2/issues
+// @namespace       https://github.com/Avataar120/fanfields2
+// @issueTracker    https://github.com/Avataar120/fanfields2/issues
+// @homepageURL     https://github.com/Avataar120/fanfields2/
 // @depends         draw-tools@breunigs
 // @recommends      bookmarks@ZasoGD|draw-tools-plus@zaso|liveInventory@DanielOnDiordna|keys@xelio
-// @preview         https://raw.githubusercontent.com/Heistergand/fanfields2/master/FanFields2.png
+// @preview         https://raw.githubusercontent.com/Avataar120/fanfields2/master/FanFields2.png
 // @match           https://intel.ingress.com/*
 // @include         https://intel.ingress.com/*
 // @grant           none
@@ -33,6 +33,11 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.16',
+      changes: [
+        'NEW: Task List now shows grid lines between portals and between columns, and centers all its text, for an easier read.',
+      ],
+    },{
       version: '2.8.15',
       changes: [
         'FIX: The Statistics window no longer stays frozen on stale numbers — it now updates live every time the plan recalculates, same as the Task List already did.',
@@ -919,7 +924,7 @@ function wrapper(plugin_info) {
         '<hr noshade>' +
 
         '<p>Found a bug? Post your issues at GitHub:<br>' +
-        '<a href="https://github.com/Heistergand/fanfields2/issues">https://github.com/Heistergand/fanfields2/issues</a></p>',
+        '<a href="https://github.com/Avataar120/fanfields2/issues">https://github.com/Avataar120/fanfields2/issues</a></p>',
       id: 'plugin_fanfields2_alert_help',
       title: 'Fan Fields 2 - Help',
       width: width,
@@ -2587,6 +2592,49 @@ function wrapper(plugin_info) {
       '  color: #CCCCCC;\n' +
       '  font-size: 12px;\n' +
       '}\n');
+
+    // Task List: separator lines between portal rows and between columns, so the table reads
+    // as a grid instead of loose text. A portal row is separated from the next portal (or from
+    // its own expanded link details) by this border; the link detail rows get their own,
+    // darker separator below.
+    addCSS('\n' +
+      '#plugin_fanfields2_exportText_inner table {\n' +
+      '  border-collapse: collapse;\n' +
+      '  border: 1px solid #ffffff;\n' +
+      '}\n' +
+      '#plugin_fanfields2_exportText_inner th,\n' +
+      '#plugin_fanfields2_exportText_inner td {\n' +
+      '  border-right: 1px solid #ffffff;\n' +
+      '  text-align: center !important;\n' +
+      '}\n' +
+      '#plugin_fanfields2_exportText_inner th:last-child,\n' +
+      '#plugin_fanfields2_exportText_inner td:last-child {\n' +
+      '  border-right: none;\n' +
+      '}\n' +
+      // The 3rd column is a spacer on portal rows (reserved so the layout lines up with the
+      // flip-direction button that sits there on a link detail row) — with borders now drawn
+      // around every cell it would otherwise show up as its own empty boxed-off column, so it
+      // shares a border with the Action column instead of standing apart.
+      '#plugin_fanfields2_exportText_inner th:nth-child(2),\n' +
+      '#plugin_fanfields2_exportText_inner td:nth-child(2) {\n' +
+      '  border-right: none;\n' +
+      '}\n' +
+      '#plugin_fanfields2_exportText_inner thead th {\n' +
+      '  border-bottom: 1px solid #ffffff;\n' +
+      '}\n' +
+      '#plugin_fanfields2_exportText_inner tbody.plugin_fanfields2_exportText_Portal > tr > td {\n' +
+      '  border-top: 1px solid #ffffff;\n' +
+      '}\n'
+    );
+
+    // Task List: once a portal is unfolded, its link detail rows get their own separator —
+    // darker than the portal-to-portal one above, since it only marks sub-items of the same
+    // portal rather than a new portal starting.
+    addCSS('\n' +
+      '#plugin_fanfields2_exportText_inner .plugin_fanfields2_exportText_LinkDetails > tr > td {\n' +
+      '  border-top: 1px solid #555;\n' +
+      '}\n'
+    );
 
     addCSS('\n' +
       '[plugin_fanfields2_exportText_toggle="toggle"] {\n' +
