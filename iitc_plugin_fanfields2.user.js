@@ -988,13 +988,30 @@ function wrapper(plugin_info) {
       width = thisplugin.MaxDialogWidth;
     }
 
+    var isMobile = L && L.Browser && L.Browser.mobile;
+
+    // Mobile: the Stats button lives in IITC's own sidebar/info pane, which covers the whole
+    // screen there — switch back to the map pane first so the dialog opened below shows over
+    // the map, not over the (now pointless) sidebar.
+    if (isMobile && typeof window.show === 'function') {
+      window.show('map');
+    }
+
     dialog({
       html: '<div id="plugin_fanfields2_statistics_inner">' + thisplugin.buildStatisticsHTML() + '</div>',
       id: 'plugin_fanfields2_alert_statistics',
       title: 'Fan Fields 2 - Statistics',
       width: width,
-      closeOnEscape: true
+      closeOnEscape: true,
+      draggable: true
     });
+
+    // Mobile: pin to the bottom of the screen instead of jQuery UI's default vertical
+    // centering, so the dialog doesn't sit over the middle of the map where the portals are.
+    if (isMobile) {
+      $('#plugin_fanfields2_alert_statistics')
+        .dialog('option', 'position', { my: 'bottom', at: 'bottom-10', of: window });
+    }
   }
 
   thisplugin.exportDrawtools = function () {
