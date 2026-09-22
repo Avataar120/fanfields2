@@ -3,7 +3,7 @@
 // @id              fanfields@avataar120
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.17.20260922
+// @version         2.8.16.20260922
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Avataar120/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Avataar120/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -33,14 +33,10 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
-      version: '2.8.17',
-      changes: [
-        'NEW: Added a Lock/Unlock padlock icon to the map\'s own topleft shortcuts (green open, red closed), next to the Task List/Shift/Pick anchor buttons, so the plan can be frozen without opening the sidebar menu.',
-      ],
-    },{
       version: '2.8.16',
       changes: [
         'NEW: Task List now shows grid lines between portals and between columns, and centers all its text, for an easier read.',
+        'NEW: Added a Lock/Unlock padlock icon to the map\'s own topleft shortcuts (green open, red closed), next to the Task List/Shift/Pick anchor buttons, so the plan can be frozen without opening the sidebar menu.',
       ],
     },{
       version: '2.8.15',
