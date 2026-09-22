@@ -3,7 +3,7 @@
 // @id              fanfields@heistergand
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.14.20260922
+// @version         2.8.15.20260922
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
 // @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-22-120000';
+  plugin_info.dateTimeVersion = '2026-09-22-153000';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,11 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.15',
+      changes: [
+        'FIX: The Statistics window no longer stays frozen on stale numbers — it now updates live every time the plan recalculates, same as the Task List already did.',
+      ],
+    },{
       version: '2.8.14',
       changes: [
         'NEW: Added a "Pick anchor" button (in the sidebar and next to the map\'s own Shift left/right buttons) to make any portal the anchor just by clicking it on the map — including one in the middle of the selection, not only the outer edge portals reachable with Shift left/right.',
@@ -925,46 +930,71 @@ function wrapper(plugin_info) {
 
 
 
-  thisplugin.showStatistics = function () {
-    var text = '';
-    if (this.sortedFanpoints.length > 3) {
-      text = '';
-      var totalLinks = thisplugin.donelinks.length;
-      var validLinks = (thisplugin.validLinkCount !== undefined) ? thisplugin.validLinkCount : totalLinks;
-      var totalFields = thisplugin.triangles.length;
-      var validFields = (thisplugin.validTriangleCount !== undefined) ? thisplugin.validTriangleCount : totalFields;
-
-      var linksText = (validLinks !== totalLinks) ? (validLinks + ' / ' + totalLinks) : validLinks.toString();
-      var fieldsText = (validFields !== totalFields) ? (validFields + ' / ' + totalFields) : validFields.toString();
-
-      var warn = '';
-      if (validLinks !== totalLinks || validFields !== totalFields) {
-        warn = '<tr><td colspan="2"><span class="plugin_fanfields2_warn">⚠ Under-field invalid links excluded from counts</span></td></tr>';
-      }
-
-      text = '<table><tr><td>FanPortals:</td><td>' + (thisplugin.n - 1) + '</td><tr>' +
-        '<tr><td>CenterKeys:</td><td>' + thisplugin.centerKeys + '</td><tr>' +
-        '<tr><td>Total links / keys:</td><td>' + linksText + '</td><tr>' +
-        '<tr><td>Fields:</td><td>' + fieldsText + '</td><tr>' +
-        '<tr><td>Build AP (links and fields):</td><td>' + (validLinks * 313 + validFields * 1250).toString() + '</td><tr>' +
-        warn +
-        '</table>';
-
-
-      var width = 400;
-      thisplugin.MaxDialogWidth = thisplugin.getMaxDialogWidth();
-      if (thisplugin.MaxDialogWidth < width) {
-        width = thisplugin.MaxDialogWidth;
-      }
-
-      dialog({
-        html: text,
-        id: 'plugin_fanfields2_alert_statistics',
-        title: 'Fan Fields 2 - Statistics',
-        width: width,
-        closeOnEscape: true
-      });
+  // Statistics dialog: build the HTML for the current plan. Used both to open the dialog and
+  // to refresh it live (see thisplugin.refreshStatisticsIfOpen) as the background plan changes.
+  thisplugin.buildStatisticsHTML = function () {
+    if (!thisplugin.sortedFanpoints || thisplugin.sortedFanpoints.length <= 3) {
+      return '<p>No Fanfield plan calculated yet.<br>Draw a polygon and let Fanfields calculate first.</p>';
     }
+
+    var totalLinks = thisplugin.donelinks.length;
+    var validLinks = (thisplugin.validLinkCount !== undefined) ? thisplugin.validLinkCount : totalLinks;
+    var totalFields = thisplugin.triangles.length;
+    var validFields = (thisplugin.validTriangleCount !== undefined) ? thisplugin.validTriangleCount : totalFields;
+
+    var linksText = (validLinks !== totalLinks) ? (validLinks + ' / ' + totalLinks) : validLinks.toString();
+    var fieldsText = (validFields !== totalFields) ? (validFields + ' / ' + totalFields) : validFields.toString();
+
+    var warn = '';
+    if (validLinks !== totalLinks || validFields !== totalFields) {
+      warn = '<tr><td colspan="2"><span class="plugin_fanfields2_warn">⚠ Under-field invalid links excluded from counts</span></td></tr>';
+    }
+
+    return '<table><tr><td>FanPortals:</td><td>' + (thisplugin.n - 1) + '</td><tr>' +
+      '<tr><td>CenterKeys:</td><td>' + thisplugin.centerKeys + '</td><tr>' +
+      '<tr><td>Total links / keys:</td><td>' + linksText + '</td><tr>' +
+      '<tr><td>Fields:</td><td>' + fieldsText + '</td><tr>' +
+      '<tr><td>Build AP (links and fields):</td><td>' + (validLinks * 313 + validFields * 1250).toString() + '</td><tr>' +
+      warn +
+      '</table>';
+  };
+
+  // Whether the Statistics dialog is currently open and visible.
+  thisplugin.isStatisticsDialogOpen = function () {
+    return $('#plugin_fanfields2_statistics_inner').is(':visible');
+  };
+
+  // Rebuild the Statistics dialog's content in place. Used to auto-refresh live as the
+  // background plan changes (new links appearing in-game, fan field rotation, etc.), mirroring
+  // thisplugin.refreshTaskListDialog for the Task List.
+  thisplugin.refreshStatisticsDialog = function () {
+    $('#plugin_fanfields2_statistics_inner').html(thisplugin.buildStatisticsHTML());
+  };
+
+  // Called after every plan recalculation (see updateLayer) so an open Statistics dialog
+  // reflects the latest counts without the user having to close and reopen it.
+  thisplugin.refreshStatisticsIfOpen = function () {
+    if (thisplugin.isStatisticsDialogOpen()) {
+      thisplugin.refreshStatisticsDialog();
+    }
+  };
+
+  thisplugin.showStatistics = function () {
+    if (!thisplugin.sortedFanpoints || thisplugin.sortedFanpoints.length <= 3) return;
+
+    var width = 400;
+    thisplugin.MaxDialogWidth = thisplugin.getMaxDialogWidth();
+    if (thisplugin.MaxDialogWidth < width) {
+      width = thisplugin.MaxDialogWidth;
+    }
+
+    dialog({
+      html: '<div id="plugin_fanfields2_statistics_inner">' + thisplugin.buildStatisticsHTML() + '</div>',
+      id: 'plugin_fanfields2_alert_statistics',
+      title: 'Fan Fields 2 - Statistics',
+      width: width,
+      closeOnEscape: true
+    });
   }
 
   thisplugin.exportDrawtools = function () {
@@ -4855,9 +4885,10 @@ function wrapper(plugin_info) {
       thisplugin.orderPathLayerGroup.clearLayers();
     }
 
-    // Keep an open Task List in sync with the background plan (new links appearing
-    // in-game, fan field rotation, etc.) without requiring it to be reopened.
+    // Keep an open Task List and Statistics dialog in sync with the background plan (new
+    // links appearing in-game, fan field rotation, etc.) without requiring them to be reopened.
     thisplugin.refreshTaskListIfOpen();
+    thisplugin.refreshStatisticsIfOpen();
   };
 
 
