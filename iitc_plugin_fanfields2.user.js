@@ -1,21 +1,21 @@
 // ==UserScript==
-// @author          Heistergand
-// @id              fanfields@heistergand
+// @author          Avataar120 (fork of Heistergand's Fan Fields 2)
+// @id              fanfields@avataar120
 // @name            Fan Fields 2
 // @category        Layer
-// @version         2.8.15.20260922
+// @version         2.8.16.20260922
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
-// @downloadURL     https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
-// @updateURL       https://github.com/Heistergand/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
-// @icon            https://raw.githubusercontent.com/Heistergand/fanfields2/master/fanfields2-32.png
-// @icon64          https://raw.githubusercontent.com/Heistergand/fanfields2/master/fanfields2-64.png
-// @supportURL      https://github.com/Heistergand/fanfields2/issues
-// @namespace       https://github.com/Heistergand/fanfields2
-// @issueTracker    https://github.com/Heistergand/fanfields2/issues
-// @homepageURL     https://github.com/Heistergand/fanfields2/
+// @downloadURL     https://github.com/Avataar120/fanfields2/raw/master/iitc_plugin_fanfields2.user.js
+// @updateURL       https://github.com/Avataar120/fanfields2/raw/master/iitc_plugin_fanfields2.meta.js
+// @icon            https://raw.githubusercontent.com/Avataar120/fanfields2/master/fanfields2-32.png
+// @icon64          https://raw.githubusercontent.com/Avataar120/fanfields2/master/fanfields2-64.png
+// @supportURL      https://github.com/Avataar120/fanfields2/issues
+// @namespace       https://github.com/Avataar120/fanfields2
+// @issueTracker    https://github.com/Avataar120/fanfields2/issues
+// @homepageURL     https://github.com/Avataar120/fanfields2/
 // @depends         draw-tools@breunigs
 // @recommends      bookmarks@ZasoGD|draw-tools-plus@zaso|liveInventory@DanielOnDiordna|keys@xelio
-// @preview         https://raw.githubusercontent.com/Heistergand/fanfields2/master/FanFields2.png
+// @preview         https://raw.githubusercontent.com/Avataar120/fanfields2/master/FanFields2.png
 // @match           https://intel.ingress.com/*
 // @include         https://intel.ingress.com/*
 // @grant           none
@@ -33,6 +33,12 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '2.8.16',
+      changes: [
+        'NEW: Task List now shows grid lines between portals and between columns, and centers all its text, for an easier read.',
+        'NEW: Added a Lock/Unlock padlock icon to the map\'s own topleft shortcuts (green open, red closed), next to the Task List/Shift/Pick anchor buttons, so the plan can be frozen without opening the sidebar menu.',
+      ],
+    },{
       version: '2.8.15',
       changes: [
         'FIX: The Statistics window no longer stays frozen on stale numbers — it now updates live every time the plan recalculates, same as the Task List already did.',
@@ -919,7 +925,7 @@ function wrapper(plugin_info) {
         '<hr noshade>' +
 
         '<p>Found a bug? Post your issues at GitHub:<br>' +
-        '<a href="https://github.com/Heistergand/fanfields2/issues">https://github.com/Heistergand/fanfields2/issues</a></p>',
+        '<a href="https://github.com/Avataar120/fanfields2/issues">https://github.com/Avataar120/fanfields2/issues</a></p>',
       id: 'plugin_fanfields2_alert_help',
       title: 'Fan Fields 2 - Help',
       width: width,
@@ -2298,6 +2304,12 @@ function wrapper(plugin_info) {
   thisplugin.is_locked = false;
   thisplugin.lock = function () {
     thisplugin.is_locked = !thisplugin.is_locked;
+    thisplugin.updateLockButton();
+  };
+
+  // Keeps the sidebar Lock/Unlock button and the map's own topleft padlock control (see
+  // addFfButtons) in sync with thisplugin.is_locked — whichever of the two was just clicked.
+  thisplugin.updateLockButton = function () {
     if (thisplugin.is_locked) {
       $('#plugin_fanfields2_lockbtn')
         .html('&#128274;&nbsp;Locked'); // &#128274;
@@ -2305,6 +2317,13 @@ function wrapper(plugin_info) {
       $('#plugin_fanfields2_lockbtn')
         .html('&#128275;&nbsp;Unlocked'); // &#128275;
     }
+
+    $('#fanfieldLockButton')
+      .html(thisplugin.is_locked ? lockIconClosed : lockIconOpen)
+      .toggleClass('plugin_fanfields2_lock_locked', thisplugin.is_locked)
+      .attr('title', thisplugin.is_locked
+        ? 'Locked: click to let the plan recalculate again'
+        : 'Unlocked: click to freeze the plan and stop it recalculating');
   };
 
   thisplugin.use_bookmarks_only = false;
@@ -2588,6 +2607,49 @@ function wrapper(plugin_info) {
       '  font-size: 12px;\n' +
       '}\n');
 
+    // Task List: separator lines between portal rows and between columns, so the table reads
+    // as a grid instead of loose text. A portal row is separated from the next portal (or from
+    // its own expanded link details) by this border; the link detail rows get their own,
+    // darker separator below.
+    addCSS('\n' +
+      '#plugin_fanfields2_exportText_inner table {\n' +
+      '  border-collapse: collapse;\n' +
+      '  border: 1px solid #ffffff;\n' +
+      '}\n' +
+      '#plugin_fanfields2_exportText_inner th,\n' +
+      '#plugin_fanfields2_exportText_inner td {\n' +
+      '  border-right: 1px solid #ffffff;\n' +
+      '  text-align: center !important;\n' +
+      '}\n' +
+      '#plugin_fanfields2_exportText_inner th:last-child,\n' +
+      '#plugin_fanfields2_exportText_inner td:last-child {\n' +
+      '  border-right: none;\n' +
+      '}\n' +
+      // The 3rd column is a spacer on portal rows (reserved so the layout lines up with the
+      // flip-direction button that sits there on a link detail row) — with borders now drawn
+      // around every cell it would otherwise show up as its own empty boxed-off column, so it
+      // shares a border with the Action column instead of standing apart.
+      '#plugin_fanfields2_exportText_inner th:nth-child(2),\n' +
+      '#plugin_fanfields2_exportText_inner td:nth-child(2) {\n' +
+      '  border-right: none;\n' +
+      '}\n' +
+      '#plugin_fanfields2_exportText_inner thead th {\n' +
+      '  border-bottom: 1px solid #ffffff;\n' +
+      '}\n' +
+      '#plugin_fanfields2_exportText_inner tbody.plugin_fanfields2_exportText_Portal > tr > td {\n' +
+      '  border-top: 1px solid #ffffff;\n' +
+      '}\n'
+    );
+
+    // Task List: once a portal is unfolded, its link detail rows get their own separator —
+    // darker than the portal-to-portal one above, since it only marks sub-items of the same
+    // portal rather than a new portal starting.
+    addCSS('\n' +
+      '#plugin_fanfields2_exportText_inner .plugin_fanfields2_exportText_LinkDetails > tr > td {\n' +
+      '  border-top: 1px solid #555;\n' +
+      '}\n'
+    );
+
     addCSS('\n' +
       '[plugin_fanfields2_exportText_toggle="toggle"] {\n' +
       '  display: none; ' +
@@ -2696,6 +2758,21 @@ function wrapper(plugin_info) {
       '#fanfieldPickAnchorButton.plugin_fanfields2_active {\n' +
       '  box-shadow: 0 0 0 2px #ffce00 inset;\n' +
       '  color: #ffce00;\n' +
+      '}\n'
+    );
+
+    // Map topleft Lock/Unlock control: green open padlock while the plan still recalculates
+    // freely, red closed padlock once it's frozen (thisplugin.is_locked) — the SVG icon uses
+    // fill="currentColor", so its color follows this element's own color.
+    addCSS('\n' +
+      '#fanfieldLockButton {\n' +
+      '  color: #4CAF50;\n' +
+      '}\n' +
+      '#fanfieldLockButton.plugin_fanfields2_lock_locked {\n' +
+      '  color: #ff4444;\n' +
+      '}\n' +
+      '.plugin_fanfields2_lock_svg {\n' +
+      '  vertical-align: middle;\n' +
       '}\n'
     );
 
@@ -5011,6 +5088,12 @@ function wrapper(plugin_info) {
   var symbol_clipboard = '&#128203;';
   var symbol_target = '&#127919;';
 
+  // Padlock icons for the Lock/Unlock control (map topleft button and, via CSS color, the
+  // sidebar Lock/Unlock button's icon too): plain SVG rather than the 🔒/🔓 emoji, since an
+  // emoji's color is fixed by the OS/browser font and can't be recolored to green/red.
+  var lockIconOpen = '<svg class="plugin_fanfields2_lock_svg" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M18,8H17V6A5,5 0 0,0 12,1C10.06,1 8.4,2.13 7.6,3.75L9.32,4.44C9.75,3.6 10.79,3 12,3A3,3 0 0,1 15,6V8H6A2,2 0 0,0 4,10V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V10A2,2 0 0,0 18,8M12,17A2,2 0 0,1 10,15A2,2 0 0,1 12,13A2,2 0 0,1 14,15A2,2 0 0,1 12,17Z"/></svg>';
+  var lockIconClosed = '<svg class="plugin_fanfields2_lock_svg" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z"/></svg>';
+
   thisplugin.addFfButtons = function () {
     thisplugin.ffButtons = L.Control.extend({
       options: {
@@ -5061,6 +5144,15 @@ function wrapper(plugin_info) {
           )
           .on("click", "#fanfieldPickAnchorButton", function () {
             thisplugin.toggleAnchorPicking();
+          });
+
+        $(container)
+          .append(
+            '<a id="fanfieldLockButton" href="javascript: void(0);" class="fanfields-control" title="Unlocked: click to freeze the plan and stop it recalculating">' +
+            lockIconOpen + '</a>'
+          )
+          .on("click", "#fanfieldLockButton", function () {
+            thisplugin.lock();
           });
 
         return container;
@@ -5275,6 +5367,7 @@ function wrapper(plugin_info) {
     thisplugin.updateRespectIntelButton();
     thisplugin.updateGreyOutExistingLinksButton();
     thisplugin.updateLinkOrderModeButton();
+    thisplugin.updateLockButton();
 
     //         window.pluginCreateHook('pluginBkmrksEdit');
 
