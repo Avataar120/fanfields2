@@ -680,11 +680,11 @@ function wrapper(plugin_info) {
   // is skipped, then retried on the next recalculations — only until this timestamp (set when the
   // portal set changes), so it covers links still loading in, not links thrown later while playing.
   thisplugin.ORIENTATION_SEARCH_RETRY_MS = 60000;
+  thisplugin._orientationSearchRetryUntil = 0;
 
   // Longest the search may keep trying candidates (it tries the most promising ones first, and
   // stops early once a candidate reuses every existing link).
   thisplugin.ORIENTATION_SEARCH_BUDGET_MS = 8000;
-  thisplugin._orientationSearchRetryUntil = 0;
 
   // The walk/display order: thisplugin.sortedFanpoints reordered per thisplugin.displayOrderGuids
   // (the "Less walking" relocation — see above), or thisplugin.sortedFanpoints itself unchanged
@@ -2355,8 +2355,7 @@ function wrapper(plugin_info) {
 
 
   thisplugin.is_clockwise = true;
-  thisplugin.toggleclockwise = function () {
-    thisplugin.is_clockwise = !thisplugin.is_clockwise;
+  thisplugin.updateClockwiseButton = function () {
     var clockwiseSymbol = "",
       clockwiseWord = "";
     if (thisplugin.is_clockwise) {
@@ -2367,6 +2366,13 @@ function wrapper(plugin_info) {
       clockwiseWord = "Counterclockwise";
     }
 
+    $('#plugin_fanfields3_clckwsbtn')
+      .html(clockwiseWord + '&nbsp;' + clockwiseSymbol + '');
+  };
+
+  thisplugin.toggleclockwise = function () {
+    thisplugin.is_clockwise = !thisplugin.is_clockwise;
+
     // Reset the order and link flips – new geometry, new base ordering (ghi#23)
     thisplugin.manualOrderGuids = null;
     thisplugin.manualLinkFlips = {};
@@ -2374,8 +2380,7 @@ function wrapper(plugin_info) {
     thisplugin.displayOrderGuids = null;
     thisplugin.requestLinkOrderRecompute();
 
-    $('#plugin_fanfields3_clckwsbtn')
-      .html(clockwiseWord + '&nbsp;' + clockwiseSymbol + '');
+    thisplugin.updateClockwiseButton();
     thisplugin.delayedUpdateLayer(0.2);
   };
 
@@ -4854,13 +4859,25 @@ function wrapper(plugin_info) {
         }
 
         if (hasOwnLinksToReuse) {
+          // What makes a candidate orientation better, in priority order: more links of the plan
+          // already thrown in-game, then more fields, then fewer keys on the busiest portal.
           var scoreOrientation = function (guid, cw) {
             var candidate = buildFanPlan(guid, cw);
-            var score = 0;
+            var reused = 0;
             candidate.donelinks.forEach(function (link) {
-              if (link.guidA && link.guidB && thisplugin.isLinkInGame(link.guidA, link.guidB)) score++;
+              if (link.guidA && link.guidB && thisplugin.isLinkInGame(link.guidA, link.guidB)) reused++;
             });
-            return score;
+            var maxKeys = 0;
+            candidate.sortedFanpoints.forEach(function (fp) {
+              if (fp.incoming.length > maxKeys) maxKeys = fp.incoming.length;
+            });
+            return { reused: reused, fields: candidate.triangles.length, maxKeys: maxKeys };
+          };
+
+          var isBetterScore = function (score, than) {
+            if (score.reused !== than.reused) return score.reused > than.reused;
+            if (score.fields !== than.fields) return score.fields > than.fields;
+            return score.maxKeys < than.maxKeys;
           };
 
           var bestGuid = thisplugin.perimeterpoints[thisplugin.startingpointIndex][0];
@@ -4875,13 +4892,13 @@ function wrapper(plugin_info) {
           var searchDeadline = Date.now() + thisplugin.ORIENTATION_SEARCH_BUDGET_MS;
 
           for (var candidateIdx = 0;
-            candidateIdx < candidateGuids.length && bestScore < ownLinks.total && Date.now() < searchDeadline;
+            candidateIdx < candidateGuids.length && bestScore.reused < ownLinks.total && Date.now() < searchDeadline;
             candidateIdx++) {
             var candidateGuid = candidateGuids[candidateIdx];
             [true, false].forEach(function (cw) {
               if (candidateGuid === bestGuid && cw === bestClockwise) return;
               var score = scoreOrientation(candidateGuid, cw);
-              if (score > bestScore) {
+              if (isBetterScore(score, bestScore)) {
                 bestScore = score;
                 bestGuid = candidateGuid;
                 bestClockwise = cw;
@@ -4890,6 +4907,7 @@ function wrapper(plugin_info) {
           }
 
           thisplugin.is_clockwise = bestClockwise;
+          thisplugin.updateClockwiseButton();
 
           // Pin the pick (auto, not manual) so it sticks across future recalculations even
           // when it isn't a hull vertex — see pinStartingpointToGuid/forcedAnchorGUID above.
