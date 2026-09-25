@@ -3,7 +3,7 @@
 // @id              fanfields@avataar120
 // @name            Fan Fields 3
 // @category        Layer
-// @version         3.0.0.20260925
+// @version         3.1.0.20260925
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Avataar120/fanfields3/raw/master/iitc_plugin_fanfields3.user.js
 // @updateURL       https://github.com/Avataar120/fanfields3/raw/master/iitc_plugin_fanfields3.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-22-153000';
+  plugin_info.dateTimeVersion = '2026-09-25-130907';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,16 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '3.1.0',
+      changes: [
+        'NEW: Blockers option (on by default): links that cross your plan and that Respect Intel does not avoid are drawn as red dotted lines, and the Task List gets Destroy stops telling you which portals to neutralize so those links are gone before the links they block are thrown. Each stop is placed where it adds the least walking, and one portal that frees several links is preferred over several separate ones when it costs less walking.',
+        'NEW: A portal the plan captures anyway is marked with a red cross and "(frees N)" when capturing it frees a blocking link in time.',
+        'NEW: Max detour option (100 m, 200 m, 500 m by default, 1 km or no limit) limits the extra walking one Destroy stop may add. Links that cannot be freed within it are listed under the Task List.',
+        'NEW: Destroy stops also appear in the Google Maps route, the Portal Route import and the printed Task List.',
+        'NEW: The plan now locks itself as soon as a new plan is completely calculated, so it stops moving while you pan, zoom or the map data refreshes. Changing a menu option, the drawn polygon or a map layer recalculates it and locks it again; clicking Lock/Unlock yourself keeps your choice until the next new plan.',
+        'FIX: Menu options such as Clockwise, Respect Intel, SBUL or Optim now recalculate the plan even while it is locked, instead of changing the button without changing the plan.',
+      ],
+    },{
       version: '3.0.0',
       changes: [
         'NEW: The plugin is now Fan Fields 3, with its own GitHub repository (fanfields3) and new download/update address. Scripts installed from the old address no longer update: reinstall from https://github.com/Avataar120/fanfields3/raw/master/iitc_plugin_fanfields3.user.js.',
