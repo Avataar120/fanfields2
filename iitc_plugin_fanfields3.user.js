@@ -3030,35 +3030,38 @@ function wrapper(plugin_info) {
 
 
 
-  thisplugin.linksEqual = function (link1, link2) {
-    var Aa, Ab, Ba, Bb;
-    Aa = link1.a.equals(link2.a);
-    Ab = link1.a.equals(link2.b);
-    Ba = link1.b.equals(link2.a);
-    Bb = link1.b.equals(link2.b);
-    if ((Aa || Ab) && (Ba || Bb)) {
-      return true;
+  // Undirected key for the link between two projected points.
+  thisplugin.pointPairKey = function (pointA, pointB) {
+    var keyA = pointA.x + ',' + pointA.y;
+    var keyB = pointB.x + ',' + pointB.y;
+    return (keyA < keyB) ? (keyA + '|' + keyB) : (keyB + '|' + keyA);
+  };
+
+  // Set of pointPairKey()s of the player's own faction's in-game links, rebuilt by
+  // indexOwnLinks() whenever thisplugin.intelLinks is (re)built.
+  thisplugin.ownLinkKeys = {};
+
+  thisplugin.indexOwnLinks = function () {
+    var keys = {};
+    var ownTeam = thisplugin.getOwnFactionTeam();
+    if (ownTeam !== undefined) {
+      for (var guid in thisplugin.intelLinks) {
+        var link = thisplugin.intelLinks[guid];
+        if (link.team === ownTeam) keys[thisplugin.pointPairKey(link.a, link.b)] = true;
+      }
     }
+    thisplugin.ownLinkKeys = keys;
   };
 
   // Task List: does a real in-game link already exist between these two portals?
   // Only links belonging to the player's own faction count (Res links must not
   // grey out an Enl plan, and vice versa).
   thisplugin.isLinkInGame = function (guidA, guidB) {
-    var ownTeam = thisplugin.getOwnFactionTeam();
-    if (ownTeam === undefined) return false;
-
     var pointA = thisplugin.locations && thisplugin.locations[guidA];
     var pointB = thisplugin.locations && thisplugin.locations[guidB];
     if (!pointA || !pointB) return false;
 
-    var testLink = { a: pointA, b: pointB };
-    for (var guid in thisplugin.intelLinks) {
-      var link = thisplugin.intelLinks[guid];
-      if (link.team !== ownTeam) continue;
-      if (thisplugin.linksEqual(link, testLink)) return true;
-    }
-    return false;
+    return !!thisplugin.ownLinkKeys[thisplugin.pointPairKey(pointA, pointB)];
   };
 
 
@@ -4271,6 +4274,7 @@ function wrapper(plugin_info) {
       line.b = map.project(b, thisplugin.PROJECT_ZOOM);
       thisplugin.intelLinks[guid] = line;
     });
+    thisplugin.indexOwnLinks();
 
     // Cache intel links as a flat array once (used repeatedly in candidate loop)
     var maplinksAll = null;
@@ -5030,6 +5034,7 @@ function wrapper(plugin_info) {
         team: link.options.team
       };
     });
+    thisplugin.indexOwnLinks();
   };
 
   // Called when IITC's own portal/link data changes (new links thrown in-game, portals
