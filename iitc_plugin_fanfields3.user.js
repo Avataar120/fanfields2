@@ -680,6 +680,10 @@ function wrapper(plugin_info) {
   // is skipped, then retried on the next recalculations — only until this timestamp (set when the
   // portal set changes), so it covers links still loading in, not links thrown later while playing.
   thisplugin.ORIENTATION_SEARCH_RETRY_MS = 60000;
+
+  // Longest the search may keep trying candidates (it tries the most promising ones first, and
+  // stops early once a candidate reuses every existing link).
+  thisplugin.ORIENTATION_SEARCH_BUDGET_MS = 8000;
   thisplugin._orientationSearchRetryUntil = 0;
 
   // The walk/display order: thisplugin.sortedFanpoints reordered per thisplugin.displayOrderGuids
@@ -3070,22 +3074,30 @@ function wrapper(plugin_info) {
     return !!thisplugin.ownLinkKeys[thisplugin.pointPairKey(pointA, pointB)];
   };
 
-  // Whether at least one in-game link of the player's own faction joins two of these fanpoints
-  // (guid -> projected point). Without any, no anchor/direction can reuse an existing link.
-  thisplugin.hasOwnLinksAmong = function (fanpoints) {
+  // The player's own faction's in-game links joining two of these fanpoints (guid -> projected
+  // point): how many there are in total, and how many touch each portal (byGuid). No such link
+  // means no anchor/direction can reuse an existing one.
+  thisplugin.getOwnLinkDegrees = function (fanpoints) {
+    var result = { total: 0, byGuid: {} };
     var ownTeam = thisplugin.getOwnFactionTeam();
-    if (ownTeam === undefined) return false;
+    if (ownTeam === undefined) return result;
 
-    var pointKeys = {};
-    for (var guid in fanpoints) pointKeys[thisplugin.pointKey(fanpoints[guid])] = true;
+    var guidByPointKey = {};
+    for (var guid in fanpoints) guidByPointKey[thisplugin.pointKey(fanpoints[guid])] = guid;
 
     for (var linkGuid in thisplugin.intelLinks) {
       var link = thisplugin.intelLinks[linkGuid];
-      if (link.team === ownTeam && pointKeys[thisplugin.pointKey(link.a)] && pointKeys[thisplugin.pointKey(link.b)]) {
-        return true;
-      }
+      if (link.team !== ownTeam) continue;
+
+      var guidA = guidByPointKey[thisplugin.pointKey(link.a)];
+      var guidB = guidByPointKey[thisplugin.pointKey(link.b)];
+      if (!guidA || !guidB || guidA === guidB) continue;
+
+      result.total++;
+      result.byGuid[guidA] = (result.byGuid[guidA] || 0) + 1;
+      result.byGuid[guidB] = (result.byGuid[guidB] || 0) + 1;
     }
-    return false;
+    return result;
   };
 
 
@@ -4832,7 +4844,8 @@ function wrapper(plugin_info) {
 
         var searchAllowed = !thisplugin.is_locked && !thisplugin.manualOrderGuids &&
           !(thisplugin.forcedAnchorGUID && thisplugin.forcedAnchorIsManual);
-        var hasOwnLinksToReuse = searchAllowed && thisplugin.hasOwnLinksAmong(thisplugin.fanpoints);
+        var ownLinks = searchAllowed ? thisplugin.getOwnLinkDegrees(thisplugin.fanpoints) : { total: 0, byGuid: {} };
+        var hasOwnLinksToReuse = searchAllowed && ownLinks.total > 0;
 
         if (searchAllowed && !hasOwnLinksToReuse) {
           // Nothing to reuse: keep the current orientation, and look again next time if the
@@ -4854,7 +4867,17 @@ function wrapper(plugin_info) {
           var bestClockwise = thisplugin.is_clockwise;
           var bestScore = scoreOrientation(bestGuid, bestClockwise);
 
-          Object.keys(thisplugin.fanpoints).forEach(function (candidateGuid) {
+          // Portals already touched by the most existing links first: they're the likeliest
+          // anchors. Stop as soon as every existing link is reused, or the time budget is spent.
+          var candidateGuids = Object.keys(thisplugin.fanpoints).sort(function (guidA, guidB) {
+            return (ownLinks.byGuid[guidB] || 0) - (ownLinks.byGuid[guidA] || 0);
+          });
+          var searchDeadline = Date.now() + thisplugin.ORIENTATION_SEARCH_BUDGET_MS;
+
+          for (var candidateIdx = 0;
+            candidateIdx < candidateGuids.length && bestScore < ownLinks.total && Date.now() < searchDeadline;
+            candidateIdx++) {
+            var candidateGuid = candidateGuids[candidateIdx];
             [true, false].forEach(function (cw) {
               if (candidateGuid === bestGuid && cw === bestClockwise) return;
               var score = scoreOrientation(candidateGuid, cw);
@@ -4864,7 +4887,7 @@ function wrapper(plugin_info) {
                 bestClockwise = cw;
               }
             });
-          });
+          }
 
           thisplugin.is_clockwise = bestClockwise;
 
