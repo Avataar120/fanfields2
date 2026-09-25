@@ -1,4 +1,4 @@
-# Fan Fields 2
+# Fan Fields 3
 An INGRESS fan field planner plugin for IITC Desktop and Mobile. 
 
 Use this plugin to easily plan your fanfields. It tells you how many keys you need for each portal, shows the total amount of fields and calculates the AP you will gain just for the links and fields. Works also for star fields and classic multilayer. Does not estimate MU, sorry for that.
@@ -87,7 +87,7 @@ german https://youtu.be/IFgYGUdHNcs
 
 ### Overview
 You can still see the old fieldset box design here
-![preview image](FanFields2.png)
+![preview image](FanFields3.png)
 
 ### Use of Keys Plugin information
 ![image](https://github.com/Heistergand/fanfields2/assets/16416532/d23670b2-28c9-4bdb-ac33-d3b67e7e1193)
