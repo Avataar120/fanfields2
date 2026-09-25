@@ -676,6 +676,12 @@ function wrapper(plugin_info) {
   // recalculation.
   thisplugin._orientationSearchPending = false;
 
+  // While no own-faction link joins two portals of the plan, the search has nothing to reuse and
+  // is skipped, then retried on the next recalculations — only until this timestamp (set when the
+  // portal set changes), so it covers links still loading in, not links thrown later while playing.
+  thisplugin.ORIENTATION_SEARCH_RETRY_MS = 60000;
+  thisplugin._orientationSearchRetryUntil = 0;
+
   // The walk/display order: thisplugin.sortedFanpoints reordered per thisplugin.displayOrderGuids
   // (the "Less walking" relocation — see above), or thisplugin.sortedFanpoints itself unchanged
   // if there's no active relocation, or if displayOrderGuids no longer matches the current plan
@@ -3064,6 +3070,24 @@ function wrapper(plugin_info) {
     return !!thisplugin.ownLinkKeys[thisplugin.pointPairKey(pointA, pointB)];
   };
 
+  // Whether at least one in-game link of the player's own faction joins two of these fanpoints
+  // (guid -> projected point). Without any, no anchor/direction can reuse an existing link.
+  thisplugin.hasOwnLinksAmong = function (fanpoints) {
+    var ownTeam = thisplugin.getOwnFactionTeam();
+    if (ownTeam === undefined) return false;
+
+    var pointKeys = {};
+    for (var guid in fanpoints) pointKeys[thisplugin.pointKey(fanpoints[guid])] = true;
+
+    for (var linkGuid in thisplugin.intelLinks) {
+      var link = thisplugin.intelLinks[linkGuid];
+      if (link.team === ownTeam && pointKeys[thisplugin.pointKey(link.a)] && pointKeys[thisplugin.pointKey(link.b)]) {
+        return true;
+      }
+    }
+    return false;
+  };
+
 
   thisplugin.intersects = function (link1, link2) {
     /* Todo:
@@ -4364,6 +4388,7 @@ function wrapper(plugin_info) {
     // matching anchor/direction below, not just later, already-established plans.
     if (thisplugin.lastPlanSignature !== currentSignature) {
       thisplugin._orientationSearchPending = true;
+      thisplugin._orientationSearchRetryUntil = Date.now() + thisplugin.ORIENTATION_SEARCH_RETRY_MS;
     }
 
     // Store signature for the next run
@@ -4805,8 +4830,17 @@ function wrapper(plugin_info) {
       if (thisplugin._orientationSearchPending) {
         thisplugin._orientationSearchPending = false;
 
-        if (!thisplugin.is_locked && !thisplugin.manualOrderGuids &&
-          !(thisplugin.forcedAnchorGUID && thisplugin.forcedAnchorIsManual)) {
+        var searchAllowed = !thisplugin.is_locked && !thisplugin.manualOrderGuids &&
+          !(thisplugin.forcedAnchorGUID && thisplugin.forcedAnchorIsManual);
+        var hasOwnLinksToReuse = searchAllowed && thisplugin.hasOwnLinksAmong(thisplugin.fanpoints);
+
+        if (searchAllowed && !hasOwnLinksToReuse) {
+          // Nothing to reuse: keep the current orientation, and look again next time if the
+          // links may still be loading in.
+          thisplugin._orientationSearchPending = Date.now() < thisplugin._orientationSearchRetryUntil;
+        }
+
+        if (hasOwnLinksToReuse) {
           var scoreOrientation = function (guid, cw) {
             var candidate = buildFanPlan(guid, cw);
             var score = 0;
