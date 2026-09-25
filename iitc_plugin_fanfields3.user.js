@@ -668,11 +668,11 @@ function wrapper(plugin_info) {
 
   // Set whenever the portal set itself just changed (a new/edited polygon replaced the
   // previous one — see the lastPlanSignature check in updateLayer()), so the next
-  // updateLayer() run searches for whichever anchor/direction reuses the most links already
-  // thrown in-game for our own faction, instead of keeping whatever anchor/direction happened
-  // to be selected before. Never set for anything else (order changes, zoom, link flips, ...)
-  // — this search tries every portal in the polygon(s) as anchor (hull or not) in both
-  // directions, so it's deliberately reserved for an actual new polygon rather than every
+  // updateLayer() run schedules a search for whichever anchor/direction reuses the most links
+  // already thrown in-game for our own faction, instead of keeping whatever anchor/direction
+  // happened to be selected before. Never set for anything else (order changes, zoom, link
+  // flips, ...) — this search tries every portal in the polygon(s) as anchor (hull or not) in
+  // both directions, so it's deliberately reserved for an actual new polygon rather than every
   // recalculation.
   thisplugin._orientationSearchPending = false;
 
@@ -685,6 +685,16 @@ function wrapper(plugin_info) {
   // Longest the search may keep trying candidates (it tries the most promising ones first, and
   // stops early once a candidate reuses every existing link).
   thisplugin.ORIENTATION_SEARCH_BUDGET_MS = 8000;
+
+  // How long the portal set must stay unchanged before the search starts, and how long it works
+  // at a stretch before handing control back to the browser.
+  thisplugin.ORIENTATION_SEARCH_START_DELAY_MS = 1000;
+  thisplugin.ORIENTATION_SEARCH_SLICE_MS = 30;
+
+  // Identifies the scheduled/running search: bumped by cancelOrientationSearch(), which makes any
+  // older search stop at its next slice and discard its result.
+  thisplugin._orientationSearchToken = 0;
+  thisplugin._orientationSearchTimer = null;
 
   // The walk/display order: thisplugin.sortedFanpoints reordered per thisplugin.displayOrderGuids
   // (the "Less walking" relocation — see above), or thisplugin.sortedFanpoints itself unchanged
@@ -802,6 +812,7 @@ function wrapper(plugin_info) {
     // Stepping through the hull by hand means giving up whichever anchor was pinned —
     // manually or by the auto-orientation search — otherwise the pin would just fight the
     // cycle buttons on the very next recalculation.
+    thisplugin.cancelOrientationSearch();
     thisplugin.forcedAnchorGUID = null;
     thisplugin.forcedAnchorIsManual = false;
 
@@ -846,6 +857,7 @@ function wrapper(plugin_info) {
   thisplugin.setAnchorByGuid = function (guid) {
     if (!guid || !thisplugin.fanpoints || !(guid in thisplugin.fanpoints)) return false;
 
+    thisplugin.cancelOrientationSearch();
     thisplugin.forcedAnchorGUID = guid;
     thisplugin.forcedAnchorIsManual = true;
 
@@ -2371,6 +2383,7 @@ function wrapper(plugin_info) {
   };
 
   thisplugin.toggleclockwise = function () {
+    thisplugin.cancelOrientationSearch();
     thisplugin.is_clockwise = !thisplugin.is_clockwise;
 
     // Reset the order and link flips – new geometry, new base ordering (ghi#23)
@@ -3103,6 +3116,144 @@ function wrapper(plugin_info) {
       result.byGuid[guidB] = (result.byGuid[guidB] || 0) + 1;
     }
     return result;
+  };
+
+  // Whether the automatic anchor/direction search may run and apply its result: not while the
+  // plan is Locked, nor with a manual portal order (that already fixes anchor/order by hand), nor
+  // with a MANUALLY pinned anchor (an automatic pick from an earlier search doesn't count).
+  thisplugin.isOrientationSearchAllowed = function () {
+    return !thisplugin.is_locked && !thisplugin.manualOrderGuids &&
+      !(thisplugin.forcedAnchorGUID && thisplugin.forcedAnchorIsManual);
+  };
+
+  // Drops any scheduled or running search (a newer one supersedes it, or the user just chose an
+  // anchor/direction by hand, which the search must not override).
+  thisplugin.cancelOrientationSearch = function () {
+    thisplugin._orientationSearchToken++;
+    clearTimeout(thisplugin._orientationSearchTimer);
+    thisplugin._orientationSearchTimer = null;
+  };
+
+  // Schedules the search to start once the portal set has stopped changing — every new call
+  // replaces the previous one, so a polygon whose portals are still streaming in is only searched
+  // once. `ctx` is what the search needs from the updateLayer() run that scheduled it:
+  // { signature, fanpoints, buildFanPlan, baseGuid, baseClockwise } — the current portal set, its
+  // plan builder, and the anchor/direction the plan is currently built for.
+  thisplugin.scheduleOrientationSearch = function (ctx) {
+    thisplugin.cancelOrientationSearch();
+    var token = thisplugin._orientationSearchToken;
+    thisplugin._orientationSearchTimer = setTimeout(function () {
+      thisplugin._orientationSearchTimer = null;
+      thisplugin.runOrientationSearch(ctx, token);
+    }, thisplugin.ORIENTATION_SEARCH_START_DELAY_MS);
+  };
+
+  // Tries anchor/direction candidates for `ctx` (see scheduleOrientationSearch) in short slices,
+  // so the interface stays responsive, and applies the best one at the end with a normal
+  // recalculation — unless anything relevant changed meanwhile (see isStale below).
+  thisplugin.runOrientationSearch = function (ctx, token) {
+    function isStale() {
+      return token !== thisplugin._orientationSearchToken ||
+        thisplugin.lastPlanSignature !== ctx.signature ||
+        !thisplugin.isOrientationSearchAllowed();
+    }
+    if (isStale()) return;
+
+    var ownLinks = thisplugin.getOwnLinkDegrees(ctx.fanpoints);
+    if (ownLinks.total === 0) {
+      // Nothing to reuse: keep the current orientation, and look again on the next recalculation
+      // if the links may still be loading in.
+      thisplugin._orientationSearchPending = Date.now() < thisplugin._orientationSearchRetryUntil;
+      return;
+    }
+
+    // What makes a candidate orientation better, in priority order: more links of the plan
+    // already thrown in-game, then more fields, then fewer keys on the busiest portal.
+    function scoreOrientation(guid, cw) {
+      var candidate = ctx.buildFanPlan(guid, cw);
+      var reused = 0;
+      candidate.donelinks.forEach(function (link) {
+        if (link.guidA && link.guidB && thisplugin.isLinkInGame(link.guidA, link.guidB)) reused++;
+      });
+      var maxKeys = 0;
+      candidate.sortedFanpoints.forEach(function (fp) {
+        if (fp.incoming.length > maxKeys) maxKeys = fp.incoming.length;
+      });
+      return { reused: reused, fields: candidate.triangles.length, maxKeys: maxKeys };
+    }
+
+    function isBetterScore(score, than) {
+      if (score.reused !== than.reused) return score.reused > than.reused;
+      if (score.fields !== than.fields) return score.fields > than.fields;
+      return score.maxKeys < than.maxKeys;
+    }
+
+    var bestGuid = ctx.baseGuid;
+    var bestClockwise = ctx.baseClockwise;
+    var bestScore = scoreOrientation(bestGuid, bestClockwise);
+
+    // Portals already touched by the most existing links first: they're the likeliest anchors.
+    // Stop as soon as every existing link is reused, or the time budget is spent.
+    var candidateGuids = Object.keys(ctx.fanpoints).sort(function (guidA, guidB) {
+      return (ownLinks.byGuid[guidB] || 0) - (ownLinks.byGuid[guidA] || 0);
+    });
+    var deadline = Date.now() + thisplugin.ORIENTATION_SEARCH_BUDGET_MS;
+    var nextCandidate = 0;
+
+    function tryCandidate(candidateGuid) {
+      [true, false].forEach(function (cw) {
+        if (candidateGuid === bestGuid && cw === bestClockwise) return;
+        var score = scoreOrientation(candidateGuid, cw);
+        if (isBetterScore(score, bestScore)) {
+          bestScore = score;
+          bestGuid = candidateGuid;
+          bestClockwise = cw;
+        }
+      });
+    }
+
+    function isDone() {
+      return nextCandidate >= candidateGuids.length || bestScore.reused >= ownLinks.total || Date.now() >= deadline;
+    }
+
+    function finish() {
+      if (isStale()) return;
+      if (bestGuid === ctx.baseGuid && bestClockwise === ctx.baseClockwise) return;
+
+      thisplugin.is_clockwise = bestClockwise;
+      thisplugin.updateClockwiseButton();
+
+      // Pin the pick (auto, not manual) so it sticks across recalculations even when it isn't a
+      // hull vertex — see forcedAnchorGUID in updateLayer().
+      thisplugin.forcedAnchorGUID = bestGuid;
+      thisplugin.forcedAnchorIsManual = false;
+
+      // The anchor changed, so flips and relocations made for the previous one no longer apply.
+      thisplugin.manualLinkFlips = {};
+      thisplugin.relocatedForLessWalkingGuids = {};
+      thisplugin.displayOrderGuids = null;
+      thisplugin.requestLinkOrderRecompute();
+
+      thisplugin.updateLayer();
+    }
+
+    function step() {
+      thisplugin._orientationSearchTimer = null;
+      if (isStale()) return;
+
+      var sliceEnd = Date.now() + thisplugin.ORIENTATION_SEARCH_SLICE_MS;
+      while (!isDone() && Date.now() < sliceEnd) {
+        tryCandidate(candidateGuids[nextCandidate++]);
+      }
+
+      if (isDone()) {
+        finish();
+      } else {
+        thisplugin._orientationSearchTimer = setTimeout(step, 0);
+      }
+    }
+
+    step();
   };
 
 
@@ -4498,9 +4649,8 @@ function wrapper(plugin_info) {
 
     // Points thisplugin.startingpointIndex at `guid` within thisplugin.perimeterpoints,
     // extending that list first if it isn't already there (same trick as the DrawTools marker
-    // above). Shared by the forcedAnchorGUID block right below and the auto-orientation search
-    // further down — both need to make an arbitrary fanpoint (not just a hull vertex) the
-    // actual, sticky anchor.
+    // above), so the forcedAnchorGUID block right below can make an arbitrary fanpoint (not just
+    // a hull vertex) the actual, sticky anchor.
     function pinStartingpointToGuid(guid) {
       thisplugin.perimeterpoints = extendperimeter(thisplugin.perimeterpoints, guid, thisplugin.fanpoints[guid]);
       for (var pi = 0; pi < thisplugin.perimeterpoints.length; pi++) {
@@ -4538,13 +4688,16 @@ function wrapper(plugin_info) {
 
     console.log("startingpointIndex = " + thisplugin.startingpointIndex);
 
+    // This run's own set of fanpoints, which buildFanPlan() below keeps using even if it's called
+    // after a later run has replaced thisplugin.fanpoints (see thisplugin.runOrientationSearch).
+    var planFanpoints = thisplugin.fanpoints;
+
     // Builds a candidate plan for a given anchor (guid, any fanpoint — not just a hull vertex)
     // and direction, entirely in local state — never touching thisplugin.startingpointIndex/
-    // is_clockwise/sortedFanpoints/links/triangles/centerKeys, etc. This used to be a single
-    // inline block computed only once per run, for whatever anchor/direction was already
-    // selected; it's now a reusable, side-effect-free building block, so it can also be tried
-    // out repeatedly — for different candidate anchors/directions — by the auto-orientation
-    // search below, before committing to one.
+    // is_clockwise/sortedFanpoints/links/triangles/centerKeys, etc. It's a side-effect-free
+    // building block: called once for the selected anchor/direction, and repeatedly — for
+    // different candidates — by the auto-orientation search (thisplugin.runOrientationSearch)
+    // before committing to one.
     function buildFanPlan(candidateStartingpointGUID, clockwise) {
       var localN = 0;
       var localCenterOutgoings = 0;
@@ -4555,16 +4708,16 @@ function wrapper(plugin_info) {
       var localTriangles = [];
       var localSorted = [];
 
-      var candidateStartingpoint = thisplugin.fanpoints[candidateStartingpointGUID];
+      var candidateStartingpoint = planFanpoints[candidateStartingpointGUID];
 
       var guid, a, b, fp, i;
 
-      for (guid in thisplugin.fanpoints) {
+      for (guid in planFanpoints) {
         localN++;
-        if (thisplugin.fanpoints[guid].equals(candidateStartingpoint)) {
+        if (planFanpoints[guid].equals(candidateStartingpoint)) {
           continue;
         } else {
-          a = thisplugin.fanpoints[guid];
+          a = planFanpoints[guid];
           b = candidateStartingpoint;
 
           localFanlinks.push({
@@ -4578,8 +4731,8 @@ function wrapper(plugin_info) {
         }
       }
 
-      for (guid in thisplugin.fanpoints) {
-        fp = thisplugin.fanpoints[guid];
+      for (guid in planFanpoints) {
+        fp = planFanpoints[guid];
         localSorted.push({
           point: fp,
           portal: portals[guid],
@@ -4588,7 +4741,7 @@ function wrapper(plugin_info) {
           incoming: [],
           outgoing: [],
           outgoingMeta: {},
-          is_startpoint: thisplugin.fanpoints[guid].equals(candidateStartingpoint)
+          is_startpoint: planFanpoints[guid].equals(candidateStartingpoint)
         });
       }
       localSorted.sort(function (a, b) {
@@ -4836,84 +4989,23 @@ function wrapper(plugin_info) {
 
     if (thisplugin.perimeterpoints.length !== 0) {
       // Right after a brand new polygon just replaced the previous portal set (never on every
-      // recalculation — this tries EVERY portal in the polygon(s) as anchor, hull or not, in
-      // both directions, so it's comparatively expensive) — and only while unlocked, and only
-      // when no manual portal order is active (that already fixes anchor/order by hand) and no
-      // MANUALLY pinned anchor is active (an automatic pick from a previous run doesn't count
-      // — see thisplugin.forcedAnchorIsManual) — pick whichever anchor and direction reuses
-      // the most links already thrown in-game for our own faction, so the freshly
-      // (re)calculated plan lines up with real progress instead of resetting to whatever
-      // anchor/direction happened to be selected before the polygon changed.
+      // recalculation), and only while the search is allowed (see
+      // thisplugin.isOrientationSearchAllowed), look for whichever anchor and direction reuses
+      // the most links already thrown in-game for our own faction, so the freshly (re)calculated
+      // plan lines up with real progress. It runs in the background once the portal set has
+      // stopped changing (thisplugin.scheduleOrientationSearch); this run keeps building the plan
+      // for the anchor and direction currently selected.
       if (thisplugin._orientationSearchPending) {
         thisplugin._orientationSearchPending = false;
 
-        var searchAllowed = !thisplugin.is_locked && !thisplugin.manualOrderGuids &&
-          !(thisplugin.forcedAnchorGUID && thisplugin.forcedAnchorIsManual);
-        var ownLinks = searchAllowed ? thisplugin.getOwnLinkDegrees(thisplugin.fanpoints) : { total: 0, byGuid: {} };
-        var hasOwnLinksToReuse = searchAllowed && ownLinks.total > 0;
-
-        if (searchAllowed && !hasOwnLinksToReuse) {
-          // Nothing to reuse: keep the current orientation, and look again next time if the
-          // links may still be loading in.
-          thisplugin._orientationSearchPending = Date.now() < thisplugin._orientationSearchRetryUntil;
-        }
-
-        if (hasOwnLinksToReuse) {
-          // What makes a candidate orientation better, in priority order: more links of the plan
-          // already thrown in-game, then more fields, then fewer keys on the busiest portal.
-          var scoreOrientation = function (guid, cw) {
-            var candidate = buildFanPlan(guid, cw);
-            var reused = 0;
-            candidate.donelinks.forEach(function (link) {
-              if (link.guidA && link.guidB && thisplugin.isLinkInGame(link.guidA, link.guidB)) reused++;
-            });
-            var maxKeys = 0;
-            candidate.sortedFanpoints.forEach(function (fp) {
-              if (fp.incoming.length > maxKeys) maxKeys = fp.incoming.length;
-            });
-            return { reused: reused, fields: candidate.triangles.length, maxKeys: maxKeys };
-          };
-
-          var isBetterScore = function (score, than) {
-            if (score.reused !== than.reused) return score.reused > than.reused;
-            if (score.fields !== than.fields) return score.fields > than.fields;
-            return score.maxKeys < than.maxKeys;
-          };
-
-          var bestGuid = thisplugin.perimeterpoints[thisplugin.startingpointIndex][0];
-          var bestClockwise = thisplugin.is_clockwise;
-          var bestScore = scoreOrientation(bestGuid, bestClockwise);
-
-          // Portals already touched by the most existing links first: they're the likeliest
-          // anchors. Stop as soon as every existing link is reused, or the time budget is spent.
-          var candidateGuids = Object.keys(thisplugin.fanpoints).sort(function (guidA, guidB) {
-            return (ownLinks.byGuid[guidB] || 0) - (ownLinks.byGuid[guidA] || 0);
+        if (thisplugin.isOrientationSearchAllowed()) {
+          thisplugin.scheduleOrientationSearch({
+            signature: currentSignature,
+            fanpoints: thisplugin.fanpoints,
+            buildFanPlan: buildFanPlan,
+            baseGuid: thisplugin.perimeterpoints[thisplugin.startingpointIndex][0],
+            baseClockwise: thisplugin.is_clockwise
           });
-          var searchDeadline = Date.now() + thisplugin.ORIENTATION_SEARCH_BUDGET_MS;
-
-          for (var candidateIdx = 0;
-            candidateIdx < candidateGuids.length && bestScore.reused < ownLinks.total && Date.now() < searchDeadline;
-            candidateIdx++) {
-            var candidateGuid = candidateGuids[candidateIdx];
-            [true, false].forEach(function (cw) {
-              if (candidateGuid === bestGuid && cw === bestClockwise) return;
-              var score = scoreOrientation(candidateGuid, cw);
-              if (isBetterScore(score, bestScore)) {
-                bestScore = score;
-                bestGuid = candidateGuid;
-                bestClockwise = cw;
-              }
-            });
-          }
-
-          thisplugin.is_clockwise = bestClockwise;
-          thisplugin.updateClockwiseButton();
-
-          // Pin the pick (auto, not manual) so it sticks across future recalculations even
-          // when it isn't a hull vertex — see pinStartingpointToGuid/forcedAnchorGUID above.
-          thisplugin.forcedAnchorGUID = bestGuid;
-          thisplugin.forcedAnchorIsManual = false;
-          pinStartingpointToGuid(bestGuid);
         }
       }
 
