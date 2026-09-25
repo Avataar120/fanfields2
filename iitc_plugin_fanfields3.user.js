@@ -3,7 +3,7 @@
 // @id              fanfields@avataar120
 // @name            Fan Fields 3
 // @category        Layer
-// @version         2.8.16.20260922
+// @version         3.0.0.20260925
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Avataar120/fanfields3/raw/master/iitc_plugin_fanfields3.user.js
 // @updateURL       https://github.com/Avataar120/fanfields3/raw/master/iitc_plugin_fanfields3.meta.js
@@ -33,6 +33,17 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '3.0.0',
+      changes: [
+        'NEW: The plugin is now Fan Fields 3, with its own GitHub repository (fanfields3) and new download/update address. Scripts installed from the old address no longer update: reinstall from https://github.com/Avataar120/fanfields3/raw/master/iitc_plugin_fanfields3.user.js.',
+        'IMPROVE: The automatic anchor/direction search now tries first the portals already touched by the most links thrown in-game for your faction, and stops as soon as every existing link is reused (or after 8 seconds on very large selections).',
+        'IMPROVE: When several anchors reuse as many existing links, the search now prefers the one giving more fields, then fewer keys on the busiest portal.',
+        'IMPROVE: The search now runs in the background once the portals have finished loading, so drawing a polygon no longer freezes the map: the plan shows right away and the anchor may update about a second later. Choosing an anchor, a direction or a manual order yourself cancels it.',
+        'IMPROVE: The search is skipped when none of your faction\'s links exist between the selected portals (it is retried for one minute, in case they are still loading).',
+        'IMPROVE: Checking whether a link already exists in-game is now instant, which speeds up the Task List, the faded links on the map and the anchor search.',
+        'FIX: The Clockwise/Counterclockwise button now shows the right direction after the automatic search changes it.',
+      ],
+    },{
       version: '2.8.16',
       changes: [
         'NEW: Task List now shows grid lines between portals and between columns, and centers all its text, for an easier read.',
