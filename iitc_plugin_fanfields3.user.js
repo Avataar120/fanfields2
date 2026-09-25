@@ -3,7 +3,7 @@
 // @id              fanfields@avataar120
 // @name            Fan Fields 3
 // @category        Layer
-// @version         3.0.0.20260925
+// @version         3.1.0.20260925
 // @description     Calculate how to link the portals to create the largest tidy set of nested fields. Enable from the layer chooser.
 // @downloadURL     https://github.com/Avataar120/fanfields3/raw/master/iitc_plugin_fanfields3.user.js
 // @updateURL       https://github.com/Avataar120/fanfields3/raw/master/iitc_plugin_fanfields3.meta.js
@@ -25,7 +25,7 @@ function wrapper(plugin_info) {
   // ensure plugin framework is there, even if iitc is not yet loaded
   if (typeof window.plugin !== 'function') window.plugin = function () {};
   plugin_info.buildName = 'main';
-  plugin_info.dateTimeVersion = '2026-09-22-153000';
+  plugin_info.dateTimeVersion = '2026-09-25-130907';
   plugin_info.pluginId = 'fanfields';
 
   /* global L, $, dialog, map, portals, links, plugin  -- eslint*/
@@ -33,6 +33,16 @@ function wrapper(plugin_info) {
 
   var arcname = (window.PLAYER && window.PLAYER.team === 'ENLIGHTENED') ? 'Arc' : '***';
   var changelog = [{
+      version: '3.1.0',
+      changes: [
+        'NEW: Blockers option (on by default): links that cross your plan and that Respect Intel does not avoid are drawn as red dotted lines, and the Task List gets Destroy stops telling you which portals to neutralize so those links are gone before the links they block are thrown. Each stop is placed where it adds the least walking, and one portal that frees several links is preferred over several separate ones when it costs less walking.',
+        'NEW: A portal the plan captures anyway is marked with a red cross and "(frees N)" when capturing it frees a blocking link in time.',
+        'NEW: Max detour option (100 m, 200 m, 500 m by default, 1 km or no limit) limits the extra walking one Destroy stop may add. Links that cannot be freed within it are listed under the Task List.',
+        'NEW: Destroy stops also appear in the Google Maps route, the Portal Route import and the printed Task List.',
+        'NEW: The plan now locks itself as soon as a new plan is completely calculated, so it stops moving while you pan, zoom or the map data refreshes. Changing a menu option, the drawn polygon or a map layer recalculates it and locks it again; clicking Lock/Unlock yourself keeps your choice until the next new plan.',
+        'FIX: Menu options such as Clockwise, Respect Intel, SBUL or Optim now recalculate the plan even while it is locked, instead of changing the button without changing the plan.',
+      ],
+    },{
       version: '3.0.0',
       changes: [
         'NEW: The plugin is now Fan Fields 3, with its own GitHub repository (fanfields3) and new download/update address. Scripts installed from the old address no longer update: reinstall from https://github.com/Avataar120/fanfields3/raw/master/iitc_plugin_fanfields3.user.js.',
@@ -932,6 +942,14 @@ function wrapper(plugin_info) {
         'Choose which factions\' links are treated as blockers (NONE / ALL / ENL / RES / ENL &amp; MAC / RES &amp; MAC / MAC). ' +
         'The plan avoids crossing those currently visible intel links — nothing else changes, even when the selected mode includes your own faction.</p>' +
 
+        '<p><b>Blockers</b><br>' +
+        'Every visible link that crosses a link of the plan still to be thrown, and whose faction <i>Respect&nbsp;Intel</i> does not avoid, is a blocker (with Respect&nbsp;Intel on NONE, that is every crossing link; your own faction\'s links count too when it is not selected). ' +
+        'With <i>Blockers</i> on (the default), blockers are drawn as red dotted lines and the Task List gets <i>Destroy</i> rows: portals to neutralize so that the blockers are gone before the link they block is thrown. ' +
+        'A portal that frees several links at once is preferred over several separate portals whenever it costs less walking, and each row is slotted into the walk where it adds the least detour, never later than the first link it unblocks. ' +
+        'An enemy portal the plan captures anyway is marked with a cross when its capture frees a link in time; when the walk reaches it too late, it gets a <i>Destroy</i> row earlier on, and is captured later on the walk as usual. ' +
+        '<i>Max&nbsp;detour</i> (100&nbsp;m, 200&nbsp;m, 500&nbsp;m, 1&nbsp;km or no limit) caps the extra walk of a single Destroy stop; blockers that cannot be freed within it are listed under the Task List. ' +
+        'Turning <i>Blockers</i> off only removes these rows. A link of your own faction can only be broken with a Jarvis/ADA flip, or by changing <i>Respect&nbsp;Intel</i>.</p>' +
+
         '<p><b>Order & route planning</b><br>' +
         'Switch between <i>Clockwise</i> and <i>Counterclockwise</i> order to find an easier route or squeeze out extra fields. ' +
         'For fine control, open <i>Manage Portal Order</i> and drag &amp; drop portals to customise your visit order. ' +
@@ -945,6 +963,8 @@ function wrapper(plugin_info) {
         'To drop every automatic and manual override at once and go back to the plain algorithm, use the Task List\'s <i>Reset&nbsp;link&nbsp;orders</i> button.</p>' +
 
         '<p><b>Freeze recalculation</b><br>' +
+        'The plan locks itself as soon as a new plan is completely calculated (including the automatic anchor search), so it no longer moves while you pan, zoom or the map data refreshes. ' +
+        'Changing something about the plan itself — a menu option, the drawn polygon, a map layer — recalculates it and locks it again. ' +
         'Use <i>🔒&nbsp;Locked</i> to prevent the script from recalculating the plan while you zoom into details or work with large areas. ' +
         'The Task List keeps reflecting portal captures and links thrown in-game while locked — only the plan itself (link/field order) stays frozen. ' +
         'Switch back to <i>🔓&nbsp;Unlocked</i> to let the plan itself refresh again.</p>' +
@@ -1143,22 +1163,26 @@ function wrapper(plugin_info) {
   };
 
   thisplugin.getPortalRouteStops = function () {
-    return thisplugin.getDisplayOrder().map(function (portal) {
-      var latlng = map.unproject(portal.point, thisplugin.PROJECT_ZOOM);
-      var p = portal.portal || window.portals[portal.guid];
-      var title = 'unknown title';
+    var blockerPlan = thisplugin.computeBlockerPlan();
+    var stops = [];
 
-      if (p && p.options && p.options.data && p.options.data.title) {
-        title = p.options.data.title;
-      }
-
-      return {
-        guid: portal.guid || null,
-        title: title,
+    function addStop(guid, point) {
+      var latlng = map.unproject(point, thisplugin.PROJECT_ZOOM);
+      stops.push({
+        guid: guid || null,
+        title: thisplugin.getPortalTitleByGuid(guid),
         lat: latlng.lat,
         lng: latlng.lng
-      };
+      });
+    }
+
+    thisplugin.getDisplayOrder().forEach(function (portal, index) {
+      blockerPlan.stops.forEach(function (stop) {
+        if (stop.slot === index) addStop(stop.guid, stop.point);
+      });
+      addStop(portal.guid, portal.point);
     });
+    return stops;
   };
 
   thisplugin.routeWithPortalRoute = function () {
@@ -1210,6 +1234,68 @@ function wrapper(plugin_info) {
     });
   };
 
+  thisplugin.getPortalTitleByGuid = function (guid) {
+    var marker = guid ? window.portals[guid] : undefined;
+    return (marker && marker.options && marker.options.data && marker.options.data.title) || 'unknown title';
+  };
+
+  // "Portal A - Portal B (RES)" for a blocking link.
+  thisplugin.describeBlockerLink = function (blocker) {
+    var teamLabel = '';
+    if (blocker.team === window.TEAM_ENL) teamLabel = 'ENL';
+    else if (blocker.team === window.TEAM_RES) teamLabel = 'RES';
+    else if (blocker.team === window.TEAM_MAC) teamLabel = 'MAC';
+
+    return window.escapeHtmlSpecialChars(thisplugin.getPortalTitleByGuid(blocker.guidA)) + ' &harr; ' +
+      window.escapeHtmlSpecialChars(thisplugin.getPortalTitleByGuid(blocker.guidB)) +
+      (teamLabel ? ' (' + teamLabel + ')' : '');
+  };
+
+  // Task List: the row (and its expandable list of freed links) for one extra Destroy
+  // stop of the blocker plan. Also adds the stop to the Google Maps route.
+  thisplugin.buildBlockerStopHTML = function (stop, gmStops) {
+    var latlng = map.unproject(stop.point, thisplugin.PROJECT_ZOOM);
+    var lat = Math.round(latlng.lat * 10000000) / 10000000;
+    var lng = Math.round(latlng.lng * 10000000) / 10000000;
+    var rawTitle = thisplugin.getPortalTitleByGuid(stop.guid);
+    var title = window.escapeHtmlSpecialChars(rawTitle);
+    var guid = stop.guid || '';
+    var toggleId = 'plugin_fanfields3_exportText_blk_' + String(stop.guid || stop.key).replace(/[^\w-]/g, '_');
+    var action = 'Destroy';
+    var ownTeam = thisplugin.getOwnFactionTeam();
+    var needsJarvis = stop.blockers.some(function (blocker) { return blocker.team === ownTeam; });
+
+    gmStops.push(lat + ',' + lng);
+
+    var rowTitle = 'Free ' + stop.blockers.length + ' blocking link(s) before the links they block are thrown here. Adds about ' +
+      thisplugin.formatDistance(stop.detour) + ' of walking.' +
+      (needsJarvis ? ' Includes a link of your own faction: it needs a Jarvis/ADA flip.' : '');
+
+    var text = '<tbody class="plugin_fanfields3_exportText_Portal"><tr class="plugin_fanfields3_blocker_row" title="' + rowTitle + '">';
+    text += '<td>&#10006;</td>';
+    text += '<td>';
+    text += '  <label class="plugin_fanfields3_exportText_Label" for="' + toggleId + '">' + action + '</label>';
+    text += '  <input type="checkbox" id="' + toggleId + '" data-guid="blk_' + (stop.guid || stop.key) + '" plugin_fanfields3_exportText_toggle="toggle">';
+    text += '</td>';
+    text += '<td></td>';
+    text += '<td>';
+    text += '  <a class="plugin_fanfields3_exportText_print" href="https://www.google.com/maps/dir/?api=1&destination=' + lat + ',' + lng + '" target="_blank">' + title + '</a>';
+    text += '  <a class="plugin_fanfields3_exportText_ui" onclick="window.plugin.fanfields.flyToPortal({lat: ' + lat + ', lng: ' + lng + "}, '" + guid + "'); return false;" + '">' + title + '</a>';
+    text += '<br><span class="plugin_fanfields3_italic">(frees ' + stop.blockers.length + ')</span>';
+    text += '</td>';
+    text += '<td></td><td></td><td></td>';
+    text += '</tr></tbody>\n';
+
+    text += '<tbody class="plugin_fanfields3_exportText_LinkDetails plugin_fanfields3_italic" hidden>';
+    stop.blockers.forEach(function (blocker) {
+      text += '<tr><td></td><td>Frees</td><td></td><td>' + thisplugin.describeBlockerLink(blocker) +
+        (blocker.team === ownTeam ? ' &ndash; own faction, needs a Jarvis' : '') +
+        '</td><td></td><td>blocks ' + blocker.blocked.length + '</td><td></td></tr>\n';
+    });
+    text += '</tbody>\n';
+    return text;
+  };
+
   // Task List: build the HTML for the current plan. Used both to open the dialog and to
   // refresh it live (see thisplugin.refreshTaskListIfOpen) as the background plan changes.
   thisplugin.buildTaskListHTML = function () {
@@ -1241,7 +1327,14 @@ function wrapper(plugin_info) {
     // directly, which is the algorithm's own BUILD order and must stay untouched by display.
     var displayOrder = thisplugin.getDisplayOrder();
 
+    // Blockers: extra Destroy rows slotted into the walk (see computeBlockerPlan).
+    var blockerPlan = thisplugin.computeBlockerPlan();
+
     displayOrder.forEach(function (portal, index) {
+      blockerPlan.stops.forEach(function (stop) {
+        if (stop.slot === index) text += thisplugin.buildBlockerStopHTML(stop, gmStops);
+      });
+
       var p, lat, lng;
       var latlng = map.unproject(portal.point, thisplugin.PROJECT_ZOOM);
       lat = Math.round(latlng.lat * 10000000) / 10000000
@@ -1385,7 +1478,12 @@ function wrapper(plugin_info) {
       // Action
 
       text += '<td>';
-      text += '  <label class="plugin_fanfields3_exportText_Label" for="plugin_fanfields3_exportText_' + portal.guid + '">' + action + '</label>';
+      var onRouteBlockers = blockerPlan.onRoute[portal.guid];
+      var onRouteTag = onRouteBlockers
+        ? ' <span class="plugin_fanfields3_blocker_tag" title="Capturing this portal also frees ' + onRouteBlockers.length +
+          ' blocking link(s) in time for the links planned later.">&#10006;</span>'
+        : '';
+      text += '  <label class="plugin_fanfields3_exportText_Label" for="plugin_fanfields3_exportText_' + portal.guid + '">' + action + onRouteTag + '</label>';
       text += '  <input type="checkbox" id="plugin_fanfields3_exportText_' + portal.guid + '" data-guid="' + portal.guid + '" plugin_fanfields3_exportText_toggle="toggle">';
       text += '</td>';
 
@@ -1409,6 +1507,9 @@ function wrapper(plugin_info) {
       text +=
         `  <a class="plugin_fanfields3_exportText_ui" onclick="window.plugin.fanfields.flyToPortal({lat: ${lat}, lng: ${lng}}, '${portal.guid}'); return false;">${title}</a>`;
 
+      if (onRouteBlockers) {
+        text += '<br><span class="plugin_fanfields3_italic plugin_fanfields3_blocker_tag">(frees ' + onRouteBlockers.length + ')</span>';
+      }
 
       text += '</td>';
 
@@ -1510,6 +1611,20 @@ function wrapper(plugin_info) {
     if (window.plugin.keys || window.plugin.LiveInventory) {
       text += '<br><div plugin_fanfields3_enoughKeys>Adjust available keys using your keys plugin.</div>';
     };
+
+    if (blockerPlan.stops.length || blockerPlan.unresolved.length) {
+      text += '<div class="plugin_fanfields3_blocker_summary">';
+      if (blockerPlan.stops.length) {
+        text += '&#10006; ' + blockerPlan.blockers.length + ' blocking link(s), ' + blockerPlan.stops.length +
+          ' extra stop(s), about +' + thisplugin.formatDistance(blockerPlan.extraDistance) + ' of walking.';
+      }
+      if (blockerPlan.unresolved.length) {
+        text += '<div class="plugin_fanfields3_warn">&#9888; ' + blockerPlan.unresolved.length +
+          ' blocking link(s) left alone (every way to free them needs more than the maximum detour): ' +
+          blockerPlan.unresolved.map(function (blocker) { return thisplugin.describeBlockerLink(blocker); }).join('; ') + '</div>';
+      }
+      text += '</div>';
+    }
     text += '<hr noshade>';
 
     // On mobile, only the next stops still to do are sent (see GOOGLE_MAPS_MAX_STOPS_MOBILE);
@@ -1859,6 +1974,18 @@ function wrapper(plugin_info) {
           tr.plugin_fanfields3_portal_relocated span {
             color: #2E7D32 !important;
           }
+
+          tr.plugin_fanfields3_blocker_row,
+          tr.plugin_fanfields3_blocker_row td,
+          tr.plugin_fanfields3_blocker_row a,
+          tr.plugin_fanfields3_blocker_row span {
+            color: #C62828 !important;
+          }
+
+          tr td span.plugin_fanfields3_blocker_tag {
+            color: #C62828 !important;
+            text-decoration: none !important;
+          }
         `;
 
 
@@ -2148,7 +2275,7 @@ function wrapper(plugin_info) {
           }
 
           that.requestLinkOrderRecompute();
-          that.delayedUpdateLayer(0.2);
+          that.delayedUpdateLayer(0.2, true);
           $('#plugin_fanfields3_order_dialog')
             .dialog('close');
         });
@@ -2303,7 +2430,7 @@ function wrapper(plugin_info) {
     }
 
     thisplugin.updateRespectIntelButton();
-    thisplugin.delayedUpdateLayer(0.2);
+    thisplugin.delayedUpdateLayer(0.2, true);
   };
   thisplugin.indicateLinkDirection = true;
   thisplugin.toggleLinkDirIndicator = function () {
@@ -2315,7 +2442,7 @@ function wrapper(plugin_info) {
       $('#plugin_fanfields3_direction_indicator_btn')
         .html('Show&nbsp;link&nbsp;dir:&nbsp;OFF');
     }
-    thisplugin.delayedUpdateLayer(0.2);
+    thisplugin.delayedUpdateLayer(0.2, true);
   };
 
   // Grey out / strike through links (and, once all of a portal's links exist, the portal
@@ -2334,9 +2461,319 @@ function wrapper(plugin_info) {
       .html('Grey&nbsp;out&nbsp;done&nbsp;links:&nbsp;' + (thisplugin.greyOutExistingLinks ? 'ON' : 'OFF'));
   };
 
+  // Blockers: a link, from a faction that Respect Intel does not avoid, crossing a link of the
+  // plan that is still to be thrown. The plan itself is left alone; the Task List instead gets
+  // extra "Destroy"/"Capture" rows, placed where they cost the least walking, that free those
+  // links in time.
+  thisplugin.manageBlockers = true;
+  thisplugin.toggleManageBlockers = function () {
+    thisplugin.manageBlockers = !thisplugin.manageBlockers;
+    thisplugin.updateManageBlockersButton();
+    thisplugin.refreshTaskListIfOpen();
+    thisplugin.updateLayer();
+  };
+  thisplugin.updateManageBlockersButton = function () {
+    $('#plugin_fanfields3_blockers_btn')
+      .html('Blockers:&nbsp;' + (thisplugin.manageBlockers ? 'ON' : 'OFF'));
+  };
+
+  // Longest extra walk (meters) one Destroy stop may add to the route; 0 = no limit.
+  thisplugin.BLOCKER_DETOUR_LIMITS_M = [100, 200, 500, 1000, 0];
+  thisplugin.blockerMaxDetourM = 500;
+  thisplugin.getBlockerDetourLabel = function () {
+    var limit = thisplugin.blockerMaxDetourM;
+    if (!limit) return 'No&nbsp;limit';
+    return (limit >= 1000) ? (limit / 1000) + 'km' : limit + 'm';
+  };
+  thisplugin.updateBlockerDetourButton = function () {
+    $('#plugin_fanfields3_blocker_detour_btn')
+      .html('Max&nbsp;detour:&nbsp;' + thisplugin.getBlockerDetourLabel());
+  };
+  thisplugin.cycleBlockerMaxDetour = function () {
+    var limits = thisplugin.BLOCKER_DETOUR_LIMITS_M;
+    var next = (limits.indexOf(thisplugin.blockerMaxDetourM) + 1) % limits.length;
+    thisplugin.blockerMaxDetourM = limits[next];
+    thisplugin.updateBlockerDetourButton();
+    thisplugin.refreshTaskListIfOpen();
+    thisplugin.updateLayer();
+  };
+
+  // The portal guid at one end of an IITC link ('oGuid' = origin, 'dGuid' = destination), or
+  // undefined when IITC did not give it.
+  thisplugin.getLinkEndpointGuid = function (link, field) {
+    var data = link && link.options && link.options.data;
+    return (data && data[field]) || undefined;
+  };
+
+  // Works out the blockers of the current plan and how to get rid of them.
+  //
+  // A blocker must be gone before the first link it blocks is thrown, i.e. before the walk
+  // reaches that link's origin portal (its "deadline", a position in the walk). A link falls as
+  // soon as either of its two portals is neutralized, so each blocker has two candidate portals:
+  //  - an enemy portal that the plan captures anyway, if the walk reaches it before the deadline,
+  //    frees its links for nothing;
+  //  - any other candidate is inserted into the walk as an extra stop, at the spot that adds the
+  //    least walking, no later than the deadline of the blockers it frees. A plan portal reached
+  //    only after the deadline gets such an early stop too (and is captured later on the walk).
+  // Stops are chosen greedily by extra walking per blocker freed (one stop freeing several links
+  // beats several stops on the same walking), then stops that became redundant are dropped.
+  // The walk itself is never reordered.
+  //
+  // Returns { blockers, stops, onRoute, unresolved, extraDistance }:
+  //  - blockers: every blocking link { a, b, team, guidA, guidB, deadline, blocked }
+  //  - stops: extra Destroy rows in walk order { guid, point, slot, detour,
+  //    blockers } — slot = index of the walk portal it goes right before
+  //  - onRoute: plan portal guid -> blockers freed by the capture the plan already does there
+  //  - unresolved: blockers no stop could free within the maximum detour
+  thisplugin.computeBlockerPlan = function () {
+    var plan = { blockers: [], stops: [], onRoute: {}, unresolved: [], extraDistance: 0 };
+    if (!thisplugin.manageBlockers) return plan;
+
+    var walk = thisplugin.getDisplayOrder();
+    if (!walk || walk.length < 2) return plan;
+
+    var respectedTeams = thisplugin.getRespectIntelTeams();
+    var ownTeam = thisplugin.getOwnFactionTeam();
+    var maxDetour = thisplugin.blockerMaxDetourM;
+    var pointKey = thisplugin.pointKey;
+
+    // Links of the plan still to throw, each with its origin's position in the walk.
+    var planned = [];
+    walk.forEach(function (fp, k) {
+      (fp.outgoing || []).forEach(function (target) {
+        if (thisplugin.isLinkInGame(fp.guid, target.guid)) return;
+        planned.push({
+          a: fp.point,
+          b: target.point,
+          originIdx: k,
+          minX: Math.min(fp.point.x, target.point.x),
+          maxX: Math.max(fp.point.x, target.point.x),
+          minY: Math.min(fp.point.y, target.point.y),
+          maxY: Math.max(fp.point.y, target.point.y)
+        });
+      });
+    });
+    if (!planned.length) return plan;
+
+    var guidByPointKey = {};
+    for (var locGuid in thisplugin.locations) guidByPointKey[pointKey(thisplugin.locations[locGuid])] = locGuid;
+
+    var blockers = [];
+    for (var linkGuid in thisplugin.intelLinks) {
+      var intel = thisplugin.intelLinks[linkGuid];
+      if (respectedTeams.indexOf(intel.team) !== -1) continue;
+
+      var minX = Math.min(intel.a.x, intel.b.x), maxX = Math.max(intel.a.x, intel.b.x);
+      var minY = Math.min(intel.a.y, intel.b.y), maxY = Math.max(intel.a.y, intel.b.y);
+      var deadline = Infinity;
+      var blocked = [];
+      for (var pi = 0; pi < planned.length; pi++) {
+        var pl = planned[pi];
+        if (pl.maxX < minX || pl.minX > maxX || pl.maxY < minY || pl.minY > maxY) continue;
+        if (thisplugin.intersects(pl, intel)) {
+          blocked.push(pl);
+          if (pl.originIdx < deadline) deadline = pl.originIdx;
+        }
+      }
+      if (!blocked.length) continue;
+
+      blockers.push({
+        a: intel.a,
+        b: intel.b,
+        team: intel.team,
+        guidA: intel.guidA || guidByPointKey[pointKey(intel.a)],
+        guidB: intel.guidB || guidByPointKey[pointKey(intel.b)],
+        deadline: deadline,
+        blocked: blocked
+      });
+    }
+    plan.blockers = blockers;
+    if (!blockers.length) return plan;
+
+    // Candidate portals: both ends of every blocker.
+    var walkIdxByKey = {};
+    walk.forEach(function (fp, k) { walkIdxByKey[pointKey(fp.point)] = k; });
+
+    var cands = {};
+    blockers.forEach(function (blocker, bi) {
+      [[blocker.a, blocker.guidA], [blocker.b, blocker.guidB]].forEach(function (end) {
+        var key = pointKey(end[0]);
+        var cand = cands[key];
+        if (!cand) {
+          var guid = end[1] || guidByPointKey[key];
+          var marker = guid ? window.portals[guid] : undefined;
+          var team = thisplugin.getPortalTeam(marker);
+          var walkIdx = walkIdxByKey[key];
+          cand = cands[key] = {
+            key: key,
+            point: end[0],
+            guid: guid,
+            walkIdx: walkIdx,
+            // A plan portal that isn't ours is captured on the walk anyway, which frees its links.
+            capturedOnWalk: walkIdx !== undefined && (ownTeam === undefined || team !== ownTeam),
+            blockerIdx: []
+          };
+        }
+        cand.blockerIdx.push(bi);
+      });
+    });
+
+    // Meters between two projected points, with the lat/lng of each point cached.
+    var latLngCache = {};
+    function dist(p, q) {
+      var kp = pointKey(p), kq = pointKey(q);
+      var lp = latLngCache[kp] || (latLngCache[kp] = map.unproject(p, thisplugin.PROJECT_ZOOM));
+      var lq = latLngCache[kq] || (latLngCache[kq] = map.unproject(q, thisplugin.PROJECT_ZOOM));
+      return lp.distanceTo(lq);
+    }
+
+    var uncovered = {};
+    for (var ui = 0; ui < blockers.length; ui++) uncovered[ui] = true;
+
+    // The plan's own captures come first: an enemy plan portal reached before the deadline.
+    for (var ck in cands) {
+      var free = cands[ck];
+      if (!free.capturedOnWalk) continue;
+      free.blockerIdx.forEach(function (bi) {
+        if (!uncovered[bi] || free.walkIdx >= blockers[bi].deadline) return;
+        delete uncovered[bi];
+        var onRouteKey = free.guid || free.key;
+        (plan.onRoute[onRouteKey] = plan.onRoute[onRouteKey] || []).push(blockers[bi]);
+      });
+    }
+
+    // The walk with the extra stops so far; items are { point, orig } (a walk portal, orig =
+    // its index) or { point, stop }.
+    var route = walk.map(function (fp, k) { return { point: fp.point, orig: k }; });
+
+    // Cheapest place to insert the candidate with at most `bound` walk portals before it.
+    function bestInsertion(cand, bound) {
+      var best = null;
+      var walkBefore = 0;
+      for (var j = 0; j <= route.length; j++) {
+        if (walkBefore > bound) break;
+        var prev = j > 0 ? route[j - 1].point : null;
+        var next = j < route.length ? route[j].point : null;
+        var cost;
+        if (prev && next) cost = dist(prev, cand.point) + dist(cand.point, next) - dist(prev, next);
+        else if (next) cost = dist(cand.point, next);
+        else cost = prev ? dist(prev, cand.point) : 0;
+        if (!best || cost < best.cost - 1e-6) best = { index: j, cost: cost, slot: walkBefore };
+        if (j < route.length && route[j].orig !== undefined) walkBefore++;
+      }
+      return best;
+    }
+
+    var stops = [];
+    while (Object.keys(uncovered).length) {
+      var pick = null;
+      for (var key in cands) {
+        var cand = cands[key];
+        var mine = cand.blockerIdx.filter(function (bi) { return uncovered[bi]; });
+        if (!mine.length) continue;
+
+        var bounds = {};
+        mine.forEach(function (bi) { bounds[blockers[bi].deadline] = true; });
+        Object.keys(bounds).forEach(function (bound) {
+          var ins = bestInsertion(cand, Number(bound));
+          if (!ins || (maxDetour && ins.cost > maxDetour)) return;
+
+          var frees = mine.filter(function (bi) { return blockers[bi].deadline >= ins.slot; });
+          var ratio = ins.cost / frees.length;
+          if (!pick || ratio < pick.ratio - 1e-6 ||
+            (Math.abs(ratio - pick.ratio) <= 1e-6 && (frees.length > pick.frees.length ||
+              (frees.length === pick.frees.length && ins.cost < pick.ins.cost)))) {
+            pick = { cand: cand, ins: ins, frees: frees, ratio: ratio };
+          }
+        });
+      }
+      if (!pick) break;
+
+      var stop = { cand: pick.cand, point: pick.cand.point, slot: pick.ins.slot, blockerIdx: pick.frees.slice() };
+      route.splice(pick.ins.index, 0, { point: stop.point, stop: stop });
+      stops.push(stop);
+      pick.frees.forEach(function (bi) { delete uncovered[bi]; });
+    }
+
+    // Drop stops another stop (or a plan capture) makes redundant.
+    function covers(other, bi) {
+      return other.cand.blockerIdx.indexOf(bi) !== -1 && blockers[bi].deadline >= other.slot;
+    }
+    function isFreedElsewhere(stop, bi) {
+      return stops.some(function (other) { return other !== stop && covers(other, bi); });
+    }
+    for (var si = stops.length - 1; si >= 0; si--) {
+      var candidateStop = stops[si];
+      var needed = candidateStop.blockerIdx.some(function (bi) { return !isFreedElsewhere(candidateStop, bi); });
+      if (needed) continue;
+      stops.splice(si, 1);
+      route = route.filter(function (item) { return item.stop !== candidateStop; });
+    }
+
+    // Final stops in walk order, with the extra walking each really adds.
+    var slotsWalked = 0;
+    route.forEach(function (item, j) {
+      if (item.orig !== undefined) { slotsWalked++; return; }
+      var stop = item.stop;
+      var prev = j > 0 ? route[j - 1].point : null;
+      var next = j < route.length - 1 ? route[j + 1].point : null;
+      var detour;
+      if (prev && next) detour = dist(prev, stop.point) + dist(stop.point, next) - dist(prev, next);
+      else if (next) detour = dist(stop.point, next);
+      else detour = prev ? dist(prev, stop.point) : 0;
+
+      var cand = stop.cand;
+      // Every blocker of this portal still in the way when the walk gets here falls with it.
+      var stopBlockers = cand.blockerIdx
+        .filter(function (bi) { return blockers[bi].deadline >= slotsWalked; })
+        .map(function (bi) { return blockers[bi]; });
+
+      plan.stops.push({
+        guid: cand.guid,
+        key: cand.key,
+        point: cand.point,
+        slot: slotsWalked,
+        detour: detour,
+        blockers: stopBlockers
+      });
+    });
+
+    blockers.forEach(function (blocker, bi) {
+      if (uncovered[bi]) plan.unresolved.push(blocker);
+    });
+
+    function routeLength(items) {
+      var total = 0;
+      for (var j = 1; j < items.length; j++) total += dist(items[j - 1].point, items[j].point);
+      return total;
+    }
+    plan.extraDistance = routeLength(route) - routeLength(route.filter(function (item) { return item.orig !== undefined; }));
+
+    return plan;
+  };
+
   thisplugin.is_locked = false;
+
+  // Set when a plan is being (re)calculated from scratch, so the plan locks itself as soon as
+  // that calculation is complete (see lockIfPlanComplete). Cleared by clicking Lock/Unlock: the
+  // agent's own choice then stands until the next new plan.
+  thisplugin._lockWhenPlanComplete = false;
+
   thisplugin.lock = function () {
     thisplugin.is_locked = !thisplugin.is_locked;
+    thisplugin._lockWhenPlanComplete = false;
+    thisplugin.updateLockButton();
+  };
+
+  // Locks the plan once a new plan is complete: drawn, link order optimized, and the automatic
+  // anchor/direction search either done or not going to happen (a search still scheduled,
+  // running, or waiting to retry while links load in means the plan may still change).
+  thisplugin.lockIfPlanComplete = function () {
+    if (!thisplugin._lockWhenPlanComplete) return;
+    if (thisplugin._orientationSearchPending || thisplugin._orientationSearchTimer !== null) return;
+
+    thisplugin._lockWhenPlanComplete = false;
+    thisplugin.is_locked = true;
     thisplugin.updateLockButton();
   };
 
@@ -2373,7 +2810,7 @@ function wrapper(plugin_info) {
           '&#128278;&nbsp;All Portals'
         );
     }
-    thisplugin.delayedUpdateLayer(0.2);
+    thisplugin.delayedUpdateLayer(0.2, true);
   };
 
 
@@ -2405,7 +2842,7 @@ function wrapper(plugin_info) {
     thisplugin.requestLinkOrderRecompute();
 
     thisplugin.updateClockwiseButton();
-    thisplugin.delayedUpdateLayer(0.2);
+    thisplugin.delayedUpdateLayer(0.2, true);
   };
 
   thisplugin.starDirENUM = {
@@ -2430,7 +2867,7 @@ function wrapper(plugin_info) {
 
     $('#plugin_fanfields3_stardirbtn')
       .html(html);
-    thisplugin.delayedUpdateLayer(0.2);
+    thisplugin.delayedUpdateLayer(0.2, true);
   };
 
 
@@ -2440,7 +2877,7 @@ function wrapper(plugin_info) {
       thisplugin.availableSBUL++;
       $('#plugin_fanfields3_availablesbul_count')
         .html('' + (thisplugin.availableSBUL) + '');
-      thisplugin.delayedUpdateLayer(0.2);
+      thisplugin.delayedUpdateLayer(0.2, true);
     }
   }
   thisplugin.decreaseSBUL = function () {
@@ -2448,7 +2885,7 @@ function wrapper(plugin_info) {
       thisplugin.availableSBUL--;
       $('#plugin_fanfields3_availablesbul_count')
         .html('' + (thisplugin.availableSBUL) + '');
-      thisplugin.delayedUpdateLayer(0.2);
+      thisplugin.delayedUpdateLayer(0.2, true);
     }
   }
 
@@ -2863,6 +3300,36 @@ function wrapper(plugin_info) {
     );
 
 
+    // Task List: the Destroy rows added for blockers, and the cross marking a plan
+    // portal whose own capture already frees a blocker; on the map, the cross on each portal
+    // to destroy.
+    addCSS('\n' +
+      'tr.plugin_fanfields3_blocker_row,\n' +
+      'tr.plugin_fanfields3_blocker_row td,\n' +
+      'tr.plugin_fanfields3_blocker_row a,\n' +
+      'tr.plugin_fanfields3_blocker_row span {\n' +
+      '  color: #FF6B6B !important;\n' +
+      '}\n' +
+      // Always red, even on a row whose own text is green (relocated) or faded (done).
+      '#plugin_fanfields3_exportText_inner tr td span.plugin_fanfields3_blocker_tag {\n' +
+      '  color: #FF4444 !important;\n' +
+      '  text-decoration: none !important;\n' +
+      '}\n' +
+      '.plugin_fanfields3_blocker_summary {\n' +
+      '  margin-top: 8px;\n' +
+      '  text-align: left;\n' +
+      '}\n' +
+      '.plugin_fanfields3_blocker_marker {\n' +
+      '  color: #FF0000;\n' +
+      '  font-size: 18px;\n' +
+      '  font-weight: bold;\n' +
+      '  line-height: 18px;\n' +
+      '  text-align: center;\n' +
+      '  text-shadow: 1px 1px #000, 1px -1px #000, -1px 1px #000, -1px -1px #000;\n' +
+      '  pointer-events: none;\n' +
+      '}\n'
+    );
+
     addCSS('\n' +
       '.plugin_fanfields3_label {\n' +
       '   color: #FFFFBB;\n' +
@@ -3168,13 +3635,17 @@ function wrapper(plugin_info) {
         thisplugin.lastPlanSignature !== ctx.signature ||
         !thisplugin.isOrientationSearchAllowed();
     }
-    if (isStale()) return;
+    if (isStale()) {
+      thisplugin.lockIfPlanComplete();
+      return;
+    }
 
     var ownLinks = thisplugin.getOwnLinkDegrees(ctx.fanpoints);
     if (ownLinks.total === 0) {
       // Nothing to reuse: keep the current orientation, and look again on the next recalculation
       // if the links may still be loading in.
       thisplugin._orientationSearchPending = Date.now() < thisplugin._orientationSearchRetryUntil;
+      thisplugin.lockIfPlanComplete();
       return;
     }
 
@@ -3250,7 +3721,10 @@ function wrapper(plugin_info) {
 
     function step() {
       thisplugin._orientationSearchTimer = null;
-      if (isStale()) return;
+      if (isStale()) {
+        thisplugin.lockIfPlanComplete();
+        return;
+      }
 
       var sliceEnd = Date.now() + thisplugin.ORIENTATION_SEARCH_SLICE_MS;
       while (!isDone() && Date.now() < sliceEnd) {
@@ -3259,6 +3733,7 @@ function wrapper(plugin_info) {
 
       if (isDone()) {
         finish();
+        thisplugin.lockIfPlanComplete();
       } else {
         thisplugin._orientationSearchTimer = setTimeout(step, 0);
       }
@@ -3575,7 +4050,7 @@ function wrapper(plugin_info) {
     thisplugin._linkOrderRecomputePending = true;
 
     thisplugin.updateLinkOrderModeButton();
-    thisplugin.delayedUpdateLayer(0.2);
+    thisplugin.delayedUpdateLayer(0.2, true);
   };
 
   // Strict point-in-triangle test in projection space:
@@ -4468,7 +4943,9 @@ function wrapper(plugin_info) {
       var line = {
         a: {},
         b: {},
-        team: link.options.team
+        team: link.options.team,
+        guidA: thisplugin.getLinkEndpointGuid(link, 'oGuid'),
+        guidB: thisplugin.getLinkEndpointGuid(link, 'dGuid')
       };
       var a = lls[0],
         b = lls[1];
@@ -4568,6 +5045,7 @@ function wrapper(plugin_info) {
     if (thisplugin.lastPlanSignature !== currentSignature) {
       thisplugin._orientationSearchPending = true;
       thisplugin._orientationSearchRetryUntil = Date.now() + thisplugin.ORIENTATION_SEARCH_RETRY_MS;
+      thisplugin._lockWhenPlanComplete = true;
     }
 
     // Store signature for the next run
@@ -5148,6 +5626,40 @@ function wrapper(plugin_info) {
     });
 
 
+    // Blockers: the links to break as red dotted lines, and a cross on each portal to
+    // destroy for them.
+    var blockerPlan = thisplugin.computeBlockerPlan();
+    blockerPlan.blockers.forEach(function (blocker) {
+      drawLink(blocker.a, blocker.b, {
+        color: '#FF0000',
+        opacity: 1,
+        weight: 2.5,
+        dashArray: [2, 7],
+        lineCap: 'round',
+        clickable: false,
+        interactive: false,
+        smoothFactor: 10
+      });
+    });
+
+    var blockerMarkerPoints = blockerPlan.stops.map(function (stop) { return stop.point; });
+    var planPortalByGuid = {};
+    thisplugin.getDisplayOrder().forEach(function (fp) { planPortalByGuid[fp.guid] = fp; });
+    Object.keys(blockerPlan.onRoute).forEach(function (guidOrKey) {
+      if (planPortalByGuid[guidOrKey]) blockerMarkerPoints.push(planPortalByGuid[guidOrKey].point);
+    });
+    blockerMarkerPoints.forEach(function (point) {
+      L.marker(map.unproject(point, thisplugin.PROJECT_ZOOM), {
+        icon: L.divIcon({
+          className: 'plugin_fanfields3_blocker_marker',
+          iconSize: [18, 18],
+          iconAnchor: [9, 9],
+          html: '&#10006;'
+        }),
+        interactive: false
+      }).addTo(thisplugin.linksLayerGroup);
+    });
+
     var trianglesToDraw = (thisplugin.validTriangles) ? thisplugin.validTriangles : triangles;
 
     $.each(trianglesToDraw, function (idx, triangle) {
@@ -5171,22 +5683,40 @@ function wrapper(plugin_info) {
     // links appearing in-game, fan field rotation, etc.) without requiring them to be reopened.
     thisplugin.refreshTaskListIfOpen();
     thisplugin.refreshStatisticsIfOpen();
+
+    thisplugin.lockIfPlanComplete();
   };
 
 
   // as calculating portal marker visibility can take some time when there's lots of portals shown, we'll do it on
   // a short timer. this way it doesn't get repeated so much
-  thisplugin.delayedUpdateLayer = function (wait) {
+  //
+  // The lock only holds back passive recalculations (map moves, IITC data refreshes). When
+  // `userRequested` is true — the agent changed something about the plan itself (a menu option,
+  // the drawn polygon, a layer switch) — a locked plan is recalculated anyway, then locks again
+  // once that calculation is complete.
+  thisplugin._recalculationRequestedByUser = false;
+  thisplugin.delayedUpdateLayer = function (wait, userRequested) {
+    if (userRequested) thisplugin._recalculationRequestedByUser = true;
+
     if (thisplugin.timer === undefined) {
       thisplugin.timer = setTimeout(function () {
 
 
         thisplugin.timer = undefined;
+
+        var byUser = thisplugin._recalculationRequestedByUser;
+        thisplugin._recalculationRequestedByUser = false;
+        if (byUser && thisplugin.is_locked) {
+          thisplugin.is_locked = false;
+          thisplugin._lockWhenPlanComplete = true;
+          thisplugin.updateLockButton();
+        }
+
         if (!thisplugin.is_locked) {
           thisplugin.updateLayer();
         }
       }, wait * 350);
-
     }
 
   };
@@ -5209,7 +5739,9 @@ function wrapper(plugin_info) {
       thisplugin.intelLinks[guid] = {
         a: map.project(lls[0], thisplugin.PROJECT_ZOOM),
         b: map.project(lls[1], thisplugin.PROJECT_ZOOM),
-        team: link.options.team
+        team: link.options.team,
+        guidA: thisplugin.getLinkEndpointGuid(link, 'oGuid'),
+        guidB: thisplugin.getLinkEndpointGuid(link, 'dGuid')
       };
     });
     thisplugin.indexOwnLinks();
@@ -5437,6 +5969,12 @@ function wrapper(plugin_info) {
     var buttonRespect =
       '<a class="plugin_fanfields3_btn" id="plugin_fanfields3_respectbtn" onclick="window.plugin.fanfields.toggleRespectCurrentLinks();" title="Question Conflict Data">Respect&nbsp;Intel:&nbsp;NONE</a> ';
 
+    // Blockers: destroy/capture rows in the Task List for links that block the plan
+    var buttonBlockers =
+      '<a class="plugin_fanfields3_btn" id="plugin_fanfields3_blockers_btn" onclick="window.plugin.fanfields.toggleManageBlockers();" title="Add the portals to destroy to the Task List so that links crossing the plan (from factions Respect Intel does not avoid) are gone before the links they block are thrown">Blockers:&nbsp;ON</a> ';
+    var buttonBlockerDetour =
+      '<a class="plugin_fanfields3_btn" id="plugin_fanfields3_blocker_detour_btn" onclick="window.plugin.fanfields.cycleBlockerMaxDetour();" title="Longest extra walk one Destroy stop may add to the route">Max&nbsp;detour:&nbsp;500m</a> ';
+
     // Show link dir
     var buttonLinkDirectionIndicator =
       '<a class="plugin_fanfields3_btn" id="plugin_fanfields3_direction_indicator_btn" onclick="window.plugin.fanfields.toggleLinkDirIndicator();" title="Technology Intelligence See All">Show&nbsp;link&nbsp;dir:&nbsp;ON</a> ';
@@ -5491,6 +6029,8 @@ function wrapper(plugin_info) {
       buttonSBUL +
       buttonLock +
       buttonRespect +
+      buttonBlockers +
+      buttonBlockerDetour +
       buttonBookmarksOnly +
       buttonLinkDirectionIndicator +
       buttonGreyOutExistingLinks +
@@ -5548,6 +6088,8 @@ function wrapper(plugin_info) {
     }
 
     thisplugin.updateRespectIntelButton();
+    thisplugin.updateManageBlockersButton();
+    thisplugin.updateBlockerDetourButton();
     thisplugin.updateGreyOutExistingLinksButton();
     thisplugin.updateLinkOrderModeButton();
     thisplugin.updateLockButton();
@@ -5563,7 +6105,7 @@ function wrapper(plugin_info) {
     window.pluginCreateHook('pluginDrawTools');
 
     window.addHook('pluginDrawTools', function (e) {
-      thisplugin.delayedUpdateLayer(0.5);
+      thisplugin.delayedUpdateLayer(0.5, true);
     });
     window.addHook('mapDataRefreshEnd', function () {
       thisplugin.onLiveDataChanged(0.5);
@@ -5607,7 +6149,7 @@ function wrapper(plugin_info) {
     });
     window.map.on('overlayadd overlayremove', function () {
       setTimeout(function () {
-        thisplugin.delayedUpdateLayer(1.0);
+        thisplugin.delayedUpdateLayer(1.0, true);
       }, 1);
     });
     window.map.on('zoomend', function () {

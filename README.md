@@ -42,6 +42,7 @@ Use this plugin to easily plan your fanfields. It tells you how many keys you ne
     - Set how many SBUL you plan to use
   - Toggle the link direction indicator.
   - Show respect to the current intel and avoid throwing crosslinks. _(In some cases useful, in others not at all...)_
+  - Handle blockers: links crossing the plan that Respect Intel does not avoid are drawn as red dotted lines, and the Task List gets Destroy stops, placed where they add the least walking (with a maximum detour setting), to free them in time.
   - Toggle to use bookmarked portals only
   - Edit the portal visit order in a portal sequence editior.
   - View the straight-line route preview along the portal sequence.
